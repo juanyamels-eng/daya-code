@@ -12,8 +12,10 @@ const cli = meow(
 
     Options
       --cwd <path>        Working directory (default: current)
-      --provider <name>   mock | anthropic | openai | openrouter | daya
+      --provider <name>   mock | anthropic | openai | openrouter | daya | openai-compatible
       --model <name>      Model id
+      --base-url <url>    OpenAI-compatible API base URL (for openai-compatible providers)
+      --api-key <key>     API key (overrides config/env)
       --auto              Run prompt non-interactively and exit
       --architect         Two-pass mode: plan then execute
       --help              Show this help
@@ -24,6 +26,12 @@ const cli = meow(
       OPENAI_API_KEY     API key when using --provider openai
       DAYA_PROVIDER      Override --provider
       DAYA_MODEL         Override --model
+      DAYA_BASE_URL      Override --base-url
+
+    Free providers (OpenAI-compatible endpoint + key)
+      --provider openai-compatible --base-url https://openrouter.ai/api/v1 --model deepseek/deepseek-chat:free
+      --provider openai-compatible --base-url https://generativelanguage.googleapis.com/v1beta/openai --model gemini-2.5-flash
+      --provider openai-compatible --base-url http://localhost:11434/v1 --model llama3.2  (Ollama, no key needed)
   `,
   {
     importMeta: import.meta,
@@ -33,11 +41,13 @@ const cli = meow(
       model: { type: 'string' },
       auto: { type: 'boolean', default: false },
       architect: { type: 'boolean', default: false },
+      baseUrl: { type: 'string' },
+      apiKey: { type: 'string' },
     },
   },
 );
 
-const VALID_PROVIDERS: ProviderName[] = ['mock', 'anthropic', 'openai', 'openrouter', 'daya'];
+const VALID_PROVIDERS: ProviderName[] = ['mock', 'anthropic', 'openai', 'openrouter', 'daya', 'openai-compatible'];
 
 async function main(): Promise<void> {
   const cfg = envOverrides(await loadConfig());
@@ -49,8 +59,8 @@ async function main(): Promise<void> {
   }
   const model = cli.flags.model ?? cfg.provider.model;
   const cwd = cli.flags.cwd ?? process.cwd();
-  const apiKey = cfg.provider.apiKey;
-  const baseUrl = cfg.provider.baseUrl;
+  const apiKey = cli.flags.apiKey ?? cfg.provider.apiKey;
+  const baseUrl = cli.flags.baseUrl ?? cfg.provider.baseUrl;
 
   if (cli.flags.auto) {
     const prompt = cli.input.join(' ').trim();

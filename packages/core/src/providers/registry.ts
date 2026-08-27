@@ -4,7 +4,7 @@ import { streamText, type CoreMessage, type CoreTool } from 'ai';
 import type { Provider, ProviderEvent, ProviderStreamParams, ToolDefinition } from '../types.js';
 import { MockProvider } from './mock.js';
 
-export type ProviderName = 'mock' | 'anthropic' | 'openai' | 'openrouter' | 'daya';
+export type ProviderName = 'mock' | 'anthropic' | 'openai' | 'openrouter' | 'daya' | 'openai-compatible';
 
 export interface ProviderOptions {
   name: ProviderName;
@@ -18,7 +18,12 @@ export function createProvider(opts: ProviderOptions): Provider {
     return new MockProvider();
   }
   if (opts.name === 'anthropic') return new AnthropicProvider(opts.apiKey, opts.model);
-  if (opts.name === 'openai') return new OpenAIProvider(opts.apiKey, opts.model, undefined, 'openai');
+  if (opts.name === 'openai') {
+    return new OpenAIProvider(opts.apiKey, opts.model, opts.baseUrl, 'openai');
+  }
+  if (opts.name === 'openai-compatible') {
+    return new OpenAIProvider(opts.apiKey, opts.model, opts.baseUrl, 'openai-compatible');
+  }
   if (opts.name === 'openrouter') {
     return new OpenAIProvider(opts.apiKey, opts.model, 'https://openrouter.ai/api/v1', 'openrouter');
   }

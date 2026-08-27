@@ -9,6 +9,8 @@ import {
   generateCommitMessage,
 } from '../src/utils.js';
 import { Agent } from '../src/agent/loop.js';
+import { createProvider } from '../src/providers/registry.js';
+import { envOverrides } from '../src/config/loader.js';
 import { MockProvider } from '../src/providers/mock.js';
 import { defaultTools } from '../src/tools/index.js';
 import { AllowAllChecker } from '../src/permissions/checker.js';
@@ -250,5 +252,38 @@ describe('checkpoint system', () => {
     expect(restored!.length).toBe(1);
     expect(restored![0]!.content).toBe('hello');
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('openai-compatible provider', () => {
+  it('creates a provider with a custom base URL and key', () => {
+    const p = createProvider({
+      name: 'openai-compatible',
+      model: 'gemini-2.5-flash',
+      apiKey: 'test-key',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    });
+    expect(p.name).toBe('openai-compatible');
+    expect(p.model).toBe('gemini-2.5-flash');
+  });
+
+  it('falls back to mock when no api key is set', () => {
+    const p = createProvider({ name: 'openai-compatible', model: 'llama3.2' });
+    expect(p.name).toBe('mock');
+  });
+
+  it('honors DAYA_BASE_URL env override', () => {
+    const old = process.env.DAYA_BASE_URL;
+    process.env.DAYA_BASE_URL = 'http://localhost:11434/v1';
+    const cfg = envOverrides({
+      version: 1,
+      provider: { name: 'openai-compatible', model: 'llama3.2', apiKey: 'x' },
+      permissions: { bash: 'prompt', write: 'prompt', edit: 'prompt' },
+      sessions: { dir: 'nope' },
+      mcpServers: {},
+    });
+    expect(cfg.provider.baseUrl).toBe('http://localhost:11434/v1');
+    if (old) process.env.DAYA_BASE_URL = old;
+    else delete process.env.DAYA_BASE_URL;
   });
 });

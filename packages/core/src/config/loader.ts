@@ -4,7 +4,7 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
 
-const ProviderNameSchema = z.enum(['mock', 'anthropic', 'openai', 'openrouter', 'daya']);
+const ProviderNameSchema = z.enum(['mock', 'anthropic', 'openai', 'openrouter', 'daya', 'openai-compatible']);
 
 const ProviderConfigSchema = z.object({
   name: ProviderNameSchema,
@@ -84,6 +84,7 @@ export function envOverrides(cfg: DayaConfig): DayaConfig {
   const apiKey = process.env.DAYA_API_KEY ?? process.env.ANTHROPIC_API_KEY ?? process.env.OPENAI_API_KEY;
   const providerName = process.env.DAYA_PROVIDER as DayaConfig['provider']['name'] | undefined;
   const model = process.env.DAYA_MODEL;
+  const baseUrl = process.env.DAYA_BASE_URL;
   return {
     ...cfg,
     provider: {
@@ -91,6 +92,7 @@ export function envOverrides(cfg: DayaConfig): DayaConfig {
       ...(apiKey ? { apiKey } : {}),
       ...(providerName && ProviderNameSchema.safeParse(providerName).success ? { name: providerName } : {}),
       ...(model ? { model } : {}),
+      ...(baseUrl ? { baseUrl } : {}),
     },
   };
 }
