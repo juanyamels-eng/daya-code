@@ -673,51 +673,30 @@ export function App(props: AppProps): React.ReactElement {
     }
   };
 
-  const headerColor = theme.window.headerBg;
-  const info = agentRef.current?.getContextInfo();
-  const stats = tokenStatsRef.current;
-  const contextPct = info?.maxTokens
-    ? Math.min(100, Math.round(((stats.inputTokens + stats.outputTokens) / info.maxTokens) * 100))
-    : 0;
   const modeColor = mode === 'plan' ? theme.accents.plan : theme.accents.build;
-  const modePill = mode === 'plan' ? '\u25cb plan' : '\u25cf build';
+  const stats = tokenStatsRef.current;
 
   return (
     <Box flexDirection="column">
-      {/* Header */}
-      <Box borderStyle="round" borderColor={theme.window.border} paddingX={2} paddingY={0} marginBottom={1}>
-        <Box justifyContent="space-between" width="100%">
-          <Box>
-            <Text color={theme.accents.brand} bold>
-              DAYA{' '}
-            </Text>
-            <Text color={theme.text.secondary}>Code</Text>
-            <Text color={theme.text.muted}>  v0.5.0</Text>
-          </Box>
-          <Box>
-            <Text backgroundColor={modeColor} color={headerColor} bold>
-              {' '}
-              {modePill}{' '}
-            </Text>
-          </Box>
-        </Box>
-        <Box justifyContent="space-between" width="100%">
-          <Text color={theme.text.muted}>
-            {props.provider} {'\u00b7'} {props.model}
-          </Text>
-          <Text color={theme.text.muted}>theme {themeName}</Text>
-        </Box>
+      {/* Minimal header (Claude Code style — no box, no background) */}
+      <Box justifyContent="space-between" width="100%" marginBottom={1}>
+        <Text color={theme.text.muted}>
+          {'\u273b'} DAYA Code
+        </Text>
+        <Text color={theme.text.muted}>
+          {props.provider} {'\u00b7'} {props.model} {'\u00b7'} {themeName}
+        </Text>
       </Box>
 
       {/* Messages */}
-      <Box flexDirection="column" height={18} flexGrow={1}>
+      <Box flexDirection="column" height={19} flexGrow={1}>
         {logs.map((entry, i) => (
           <MessageRow key={i} entry={entry} theme={theme} />
         ))}
         {busy && (
           <Box marginTop={1}>
-            <Text color={theme.accents.info}>
-              <Spinner type="dots" /> thinking
+            <Text color={theme.text.muted}>
+              <Spinner type="dots" /> working
             </Text>
           </Box>
         )}
@@ -733,11 +712,7 @@ export function App(props: AppProps): React.ReactElement {
 
       {/* Prompt */}
       <Box marginTop={1}>
-        <Text color={modeColor}>{mode === 'plan' ? '\u25cb' : '\u25cf'} </Text>
-        <Text color={theme.accents.brand} bold>
-          daya
-        </Text>
-        <Text color={theme.text.muted}>[{mode}] </Text>
+        <Text color={modeColor}>{mode === 'plan' ? '\u25e6' : '\u25cf'} </Text>
         <TextInput
           value={permissionPrompt ? permissionInput : input}
           onChange={permissionPrompt ? setPermissionInput : setInput}
@@ -746,27 +721,15 @@ export function App(props: AppProps): React.ReactElement {
         />
       </Box>
 
-      {/* Status bar */}
-      <Box marginTop={1} justifyContent="space-between" width="100%" borderStyle="single" borderColor={theme.window.dim} paddingX={1} paddingY={0}>
-        <Box>
-          <Text color={theme.text.muted}>tokens </Text>
-          <Text color={contextPct > 80 ? theme.accents.warning : theme.text.secondary}>
-            {((stats.inputTokens + stats.outputTokens) / 1000).toFixed(1)}k
-          </Text>
-          <Text color={theme.text.muted}> / {((info?.maxTokens ?? 0) / 1000).toFixed(1)}k ({contextPct}%)</Text>
-        </Box>
-        <Box>
-          <Text color={theme.text.muted}>cost </Text>
-          <Text color={theme.text.secondary}>
-            {formatCost(estimateCost(props.model, stats.inputTokens, stats.outputTokens))}
-          </Text>
-        </Box>
-        <Box>
-          <Text color={theme.text.muted}>tools </Text>
-          <Text color={theme.text.secondary}>{stats.toolsRun}</Text>
-          <Text color={theme.text.muted}> msgs </Text>
-          <Text color={theme.text.secondary}>{messagesRef.current.length}</Text>
-        </Box>
+      {/* Status bar (bare, no border) */}
+      <Box justifyContent="space-between" width="100%" marginTop={1}>
+        <Text color={theme.text.muted}>
+          {mode === 'plan' ? 'plan' : 'build'} {'\u00b7'} ctrl+c exit {'\u00b7'} /help {'\u00b7'} tab plan/build
+        </Text>
+        <Text color={theme.text.muted}>
+          {((stats.inputTokens + stats.outputTokens) / 1000).toFixed(1)}k tokens {'\u00b7'}{' '}
+          {formatCost(estimateCost(props.model, stats.inputTokens, stats.outputTokens))} {'\u00b7'} {stats.toolsRun} tools
+        </Text>
       </Box>
     </Box>
   );
@@ -798,39 +761,41 @@ class BridgePermissionChecker implements PermissionChecker {
 }
 
 function MessageRow({ entry, theme }: { entry: LogEntry; theme: DayaTheme }): React.ReactElement {
-  const roleColor =
+  const isSpeech = entry.kind === 'user' || entry.kind === 'assistant';
+
+  const color =
     entry.kind === 'user'
       ? theme.roles.user
       : entry.kind === 'assistant'
-        ? theme.roles.assistant
+        ? theme.text.primary
         : entry.kind === 'tool'
-          ? theme.roles.tool
+          ? entry.metaColor ?? theme.text.muted
           : entry.kind === 'diag'
             ? entry.metaColor ?? theme.accents.warning
             : entry.kind === 'diff'
               ? theme.roles.diff
-              : theme.roles.system;
+              : theme.text.muted;
 
   const prefix =
-    entry.kind === 'user'
-      ? '\u1405'
-      : entry.kind === 'assistant'
-        ? '\u25c8'
-        : entry.kind === 'tool'
-          ? '\u2699'
-          : entry.kind === 'diag'
-            ? '\u26a0'
-            : entry.kind === 'diff'
-              ? '\u25b8'
-              : '\u00b7';
+    entry.kind === 'tool'
+      ? ''
+      : entry.kind === 'diag'
+        ? '\u26a0'
+        : entry.kind === 'diff'
+          ? '\u25b8'
+          : entry.kind === 'system'
+            ? '\u00b7'
+            : '';
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" marginBottom={isSpeech ? 1 : 0}>
       <Box>
-        <Text color={roleColor} bold>
-          {prefix}{' '}
-        </Text>
-        <Text color={entry.kind === 'user' || entry.kind === 'assistant' ? theme.text.primary : roleColor} wrap="wrap">
+        {prefix && (
+          <Text color={color}>
+            {prefix}{' '}
+          </Text>
+        )}
+        <Text color={color} wrap="wrap">
           {entry.text}
         </Text>
       </Box>

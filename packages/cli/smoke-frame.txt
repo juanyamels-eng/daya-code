@@ -1,0 +1,28 @@
+=== LAST FRAME ===
+✻ DAYA Code                                                        openai · gpt-4o-mini · catppuccin
+
+· v0.5.0 · openai · gpt-4o-mini · C:\Users\hp\Desktop\daya code\packages\cli
+· ├ 📁 scripts
+  │   ├ postbuild.js
+  │   └ smoke-render.mjs
+  ├ 📁 src
+  │   ├ 📁 tui
+  │   ├ index.ts
+  │   └ run-once.ts
+  ├ package-lock.json
+  ├ package.json
+  ├ tsconfig.json
+  └ tsconfig.tsbuildinfo
+  └ project structure
+· Tab toggles plan/build · /help lists commands · @file attaches
+  └ theme: catppuccin
+
+
+
+
+
+● Ask DAYA something…
+
+build · ctrl+c exit · /help · tab plan/build                           0.0k tokens · $0.00 · 0 tools
+=== FRAMES COUNT ===
+3
