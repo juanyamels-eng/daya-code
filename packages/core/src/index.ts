@@ -10,3 +10,4 @@ export * from './dayamemory/store.js';
 export * from './permissions/checker.js';
 export * from './session/store.js';
 export * from './config/loader.js';
+export * from './utils.js';

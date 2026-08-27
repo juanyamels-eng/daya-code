@@ -1,6 +1,6 @@
 {
   "name": "@daya-code/core",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "description": "Agent loop, providers, tools and session logic for DAYA Code",
   "type": "module",
   "main": "./dist/index.js",

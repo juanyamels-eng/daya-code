@@ -28,6 +28,43 @@ export function createProvider(opts: ProviderOptions): Provider {
   throw new Error(`Unknown provider: ${opts.name}`);
 }
 
+export interface FallbackConfig {
+  primary: ProviderOptions;
+  fallbacks: ProviderOptions[];
+}
+
+export class FallbackProvider implements Provider {
+  readonly name: string;
+  readonly model: string;
+  private providers: Provider[];
+  private currentIdx = 0;
+
+  constructor(config: FallbackConfig) {
+    this.name = config.primary.name;
+    this.model = config.primary.model;
+    this.providers = [
+      createProvider(config.primary),
+      ...config.fallbacks.map((f) => createProvider(f)),
+    ];
+  }
+
+  async *stream(params: ProviderStreamParams): AsyncIterable<ProviderEvent> {
+    let lastError: Error | null = null;
+    for (let i = this.currentIdx; i < this.providers.length; i++) {
+      const provider = this.providers[i]!;
+      try {
+        yield* provider.stream(params);
+        this.currentIdx = i;
+        return;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        this.currentIdx = i + 1;
+      }
+    }
+    throw lastError ?? new Error('All providers failed');
+  }
+}
+
 function toCoreMessages(messages: import('../types.js').Message[]): CoreMessage[] {
   const out: CoreMessage[] = [];
   for (const m of messages) {

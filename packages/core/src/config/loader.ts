@@ -31,6 +31,11 @@ const DayaConfigSchema = z.object({
   permissions: PermissionsConfigSchema,
   sessions: z.object({ dir: z.string() }),
   mcpServers: z.record(McpServerConfigSchema),
+  lintCmd: z.string().optional(),
+  testCmd: z.string().optional(),
+  autoCommit: z.boolean().optional(),
+  architectModel: z.string().optional(),
+  theme: z.string().optional(),
 });
 
 export type DayaConfig = z.infer<typeof DayaConfigSchema>;
@@ -57,7 +62,6 @@ export async function loadConfig(path: string = defaultConfigPath()): Promise<Da
     if (result.success) {
       return result.data;
     }
-    // If validation fails, merge with defaults
     return {
       ...DEFAULT_CONFIG,
       ...(parsed as Partial<DayaConfig>),

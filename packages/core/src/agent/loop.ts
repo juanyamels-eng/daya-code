@@ -1,4 +1,7 @@
 import { nanoid } from 'nanoid';
+import { readFile, stat, writeFile, appendFile, mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { resolve, isAbsolute, join } from 'node:path';
 import type {
   Message,
   Provider,
@@ -10,9 +13,12 @@ import type {
   ToolContext,
   ToolDefinition,
   ToolResult,
+  AgentMode,
+  ContextInfo,
 } from '../types.js';
 import { DayaClient } from '../daya/client.js';
 import { LocalMemory } from '../dayamemory/local.js';
+import { CheckpointManager, FileWatcher, getDiagnostics, type FileChange, type LspDiagnostic } from '../utils.js';
 
 export interface AgentDeps {
   provider: Provider;
@@ -22,7 +28,16 @@ export interface AgentDeps {
   system?: string;
   maxSteps?: number;
   maxTokens?: number;
+  mode?: AgentMode;
   daya?: AgentDayaConfig;
+  conventions?: string;
+  lintCmd?: string;
+  testCmd?: string;
+  autoCommit?: boolean;
+  architectModel?: string;
+  memoryFile?: string;
+  checkpointDir?: string;
+  watchFiles?: boolean;
 }
 
 export interface AgentDayaConfig {
@@ -43,6 +58,12 @@ export interface AgentEvent {
     | 'tool_finished'
     | 'tool_denied'
     | 'compacted'
+    | 'context'
+    | 'mode_changed'
+    | 'checkpoint_created'
+    | 'diagnostics'
+    | 'file_changed'
+    | 'memory_saved'
     | 'done'
     | 'error';
   data: unknown;
@@ -52,6 +73,8 @@ export interface AgentRunOptions {
   signal?: AbortSignal;
   onEvent?: (event: AgentEvent) => void;
   history?: Message[];
+  mode?: AgentMode;
+  mentionFiles?: string[];
 }
 
 const DEFAULT_SYSTEM = `You are DAYA Code, a terminal code agent.
@@ -59,35 +82,217 @@ You help users modify codebases by reading, editing and running commands.
 Use the available tools to inspect the repo before making changes.
 Be concise, explain your plan before mutating files, and prefer minimal diffs.`;
 
+const PLAN_SUFFIX = `\n\n## Current mode: PLAN
+You are in **plan mode**. You can ONLY read and analyze.
+You may use: read_file, glob, grep.
+You MUST NOT use: write_file, edit_file, bash.
+When the user asks you to make changes, explain what you would do step by step.
+The user will switch to build mode when ready.`;
+
+const BUILD_SUFFIX = `\n\n## Current mode: BUILD
+You are in **build mode**. You can read, edit, and run commands.
+Execute the user's requests. After editing files, summarize what you changed.`;
+
 const DEFAULT_MAX_STEPS = 25;
 const DEFAULT_MAX_TOKENS = 4096;
 const CONTEXT_COMPACTION_THRESHOLD = 0.9;
 const MAX_RETRIES = 3;
 const BASE_RETRY_DELAY_MS = 1000;
 
+const PLAN_ONLY_TOOLS = new Set(['read_file', 'glob', 'grep']);
+const MUTATING_TOOLS = new Set(['write_file', 'edit_file', 'bash']);
+
 export class Agent {
   private readonly deps: AgentDeps;
+  private currentMode: AgentMode;
+  private filesReferenced: Set<string> = new Set();
+  private conventions: string | undefined;
+  private checkpoints = new CheckpointManager();
+  private watcher: FileWatcher | null = null;
+  private trackedFiles: Set<string> = new Set();
 
   constructor(deps: AgentDeps) {
     this.deps = deps;
+    this.currentMode = deps.mode ?? 'build';
+    this.conventions = deps.conventions;
+  }
+
+  getMode(): AgentMode {
+    return this.currentMode;
+  }
+
+  setMode(mode: AgentMode): void {
+    this.currentMode = mode;
+  }
+
+  // --- Checkpoints ---
+  getCheckpoints() {
+    return this.checkpoints.list();
+  }
+
+  async saveCheckpoint(label: string, messages: Message[]): Promise<string> {
+    this.trackedFiles = new Set([...this.trackedFiles, ...this.filesReferenced]);
+    const cp = await this.checkpoints.save(label, messages, this.currentMode, this.deps.cwd, this.trackedFiles);
+    return cp.id;
+  }
+
+  async restoreCheckpoint(id: string): Promise<Message[] | null> {
+    const restored = this.checkpoints.restore(id);
+    if (!restored) return null;
+    await this.checkpoints.restoreFiles(id);
+    this.currentMode = restored.mode;
+    return restored.messages;
+  }
+
+  // --- File watcher ---
+  startWatcher(onChange?: (changes: FileChange[]) => void): void {
+    if (!this.deps.watchFiles) return;
+    this.watcher = new FileWatcher(this.deps.cwd);
+    this.watcher.trackMany(new Set([...this.filesReferenced, ...this.trackedFiles]));
+    this.watcher.start((changes) => {
+      if (onChange) onChange(changes);
+    });
+  }
+
+  stopWatcher(): void {
+    this.watcher?.stop();
+    this.watcher = null;
+  }
+
+  // --- LSP diagnostics ---
+  async getDiagnosticsForFile(filePath: string): Promise<LspDiagnostic[]> {
+    try {
+      return await getDiagnostics(filePath);
+    } catch {
+      return [];
+    }
+  }
+
+  // --- Memory file persistence (auto-update DAYA.md) ---
+  async saveMemory(key: string, value: string): Promise<boolean> {
+    const cwd = this.deps.cwd;
+    try {
+      const file = resolve(cwd, 'DAYA.md');
+      if (!existsSync(file)) {
+        await writeFile(file, `# Project Memory\n\n- ${key}: ${value}\n`, 'utf8');
+        return true;
+      }
+      const existing = await readFile(file, 'utf8');
+      const kvLine = `${key}: ${value}`;
+      const entryRegex = new RegExp(`^\\s*-\\s+${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:.*$`, 'gm');
+      let updated: string;
+      if (entryRegex.test(existing)) {
+        updated = existing.replace(entryRegex, `- ${kvLine}`);
+      } else {
+        updated = existing.endsWith('\n')
+          ? `${existing}- ${kvLine}\n`
+          : `${existing}\n- ${kvLine}\n`;
+      }
+      await writeFile(file, updated, 'utf8');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async extractMemoriesFromConversation(messages: Message[]): Promise<{ key: string; value: string }[]> {
+    const memories: { key: string; value: string }[] = [];
+    const userMsgs = messages.filter((m) => m.role === 'user');
+    const assistantMsgs = messages.filter((m) => m.role === 'assistant');
+
+    for (const msg of assistantMsgs) {
+      // Commands discovered
+      const testCmdMatch = msg.content.match(/run (?:the )?(?:tests|test suite)(?: with| using|:)?[^:\n]{0,40}(npm (?:test|run [a-z-]+)|pnpm (?:test|run [a-z-]+)|yarn (?:test|run [a-z-]+))/i);
+      if (testCmdMatch) {
+        memories.push({ key: 'test command', value: testCmdMatch[1]! });
+      }
+      const lintCmdMatch = msg.content.match(/run (?:the )?(?:linter|lint)(?: with| using|:)?[^:\n]{0,40}(npm run lint|pnpm run lint|yarn lint|eslint \.)/i);
+      if (lintCmdMatch) {
+        memories.push({ key: 'lint command', value: lintCmdMatch[1]! });
+      }
+    }
+
+    // Framework/package manager
+    for (const msg of userMsgs) {
+      const pmMatch = msg.content.match(/using (npm|pnpm|yarn|bun)\b/i);
+      if (pmMatch && !memories.some((m) => m.key === 'package manager')) {
+        memories.push({ key: 'package manager', value: `use ${pmMatch[1]!.toLowerCase()}` });
+      }
+    }
+
+    return memories;
+  }
+
+  async persistMemories(messages: Message[]): Promise<void> {
+    const memories = await this.extractMemoriesFromConversation(messages);
+    for (const mem of memories) {
+      await this.saveMemory(mem.key, mem.value);
+    }
+    if (memories.length > 0) {
+      // Also persist to DAYA memory store if available
+      const daya = this.deps.daya;
+      if (daya?.memory) {
+        const ns = daya.namespace ?? this.deps.cwd.replace(/\\/g, '/').toLowerCase();
+        for (const mem of memories) {
+          try {
+            await daya.memory.upsert({
+              namespace: ns,
+              key: mem.key,
+              value: mem.value,
+              metadata: null,
+              expiresAt: null,
+            });
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
   }
 
   toolDefinitions(): ToolDefinition[] {
-    return this.deps.tools.map((t) => t.definition);
+    const all = this.deps.tools.map((t) => t.definition);
+    if (this.currentMode === 'plan') {
+      return all.filter((d) => PLAN_ONLY_TOOLS.has(d.name));
+    }
+    return all;
+  }
+
+  getContextInfo(): ContextInfo {
+    return {
+      estimatedTokens: 0,
+      maxTokens: this.deps.maxTokens ?? DEFAULT_MAX_TOKENS,
+      messageCount: 0,
+      filesReferenced: [...this.filesReferenced],
+      mode: this.currentMode,
+    };
   }
 
   async run(prompt: string, options: AgentRunOptions = {}): Promise<Message[]> {
     const messages: Message[] = options.history ? [...options.history] : [];
+
+    if (options.mode) {
+      this.currentMode = options.mode;
+    }
+
     const baseSystem = this.deps.system ?? DEFAULT_SYSTEM;
     const system = await this.composeSystem(baseSystem, prompt);
     const maxSteps = this.deps.maxSteps ?? DEFAULT_MAX_STEPS;
     const maxTokens = this.deps.maxTokens ?? DEFAULT_MAX_TOKENS;
     const signal = options.signal ?? new AbortController().signal;
 
+    // Resolve @file mentions
+    const { cleanPrompt, fileContents } = await this.resolveMentions(prompt);
+    if (fileContents.length > 0) {
+      for (const fc of fileContents) {
+        this.filesReferenced.add(fc.path);
+      }
+    }
+
     messages.push({
       id: nanoid(),
       role: 'user',
-      content: prompt,
+      content: cleanPrompt,
       timestamp: Date.now(),
     });
     options.onEvent?.({ type: 'user_message', data: messages[messages.length - 1] });
@@ -99,10 +304,8 @@ export class Agent {
       if (signal.aborted) throw new Error('aborted');
       steps += 1;
 
-      // Auto-compact context if approaching limit
       await this.compactIfNeeded(messages, maxTokens, system, options.onEvent);
 
-      // Stream provider with retry
       let textAccum = '';
       const toolCalls: ToolCall[] = [];
       let streamError: Error | null = null;
@@ -134,7 +337,7 @@ export class Agent {
           }
 
           streamError = null;
-          break; // success
+          break;
         } catch (err) {
           if (signal.aborted) throw new Error('aborted');
           const isRetryable = this.isRetryableError(err);
@@ -173,7 +376,6 @@ export class Agent {
         return messages;
       }
 
-      // Parallel tool execution
       await this.executeToolCallsParallel(toolCalls, {
         signal,
         onEvent: options.onEvent,
@@ -187,29 +389,161 @@ export class Agent {
           });
         },
       });
+
+      // Run lint after mutating tools if configured
+      if (this.deps.lintCmd) {
+        await this.runPostMutationHook(this.deps.lintCmd, 'lint', signal, options.onEvent);
+      }
     }
 
     options.onEvent?.({ type: 'done', data: { reason: 'tool_use' as StopReason, messages } });
     return messages;
   }
 
-  private async composeSystem(base: string, prompt: string): Promise<string> {
-    const daya = this.deps.daya;
-    if (!daya || daya.autoRecall === false) return base;
-    if (!daya.memory) return base;
-    const ns = daya.namespace ?? this.deps.cwd.replace(/\\/g, '/').toLowerCase();
-    const topK = daya.autoRecallTopK ?? 5;
-    let hits: { key: string; value: string; score: number }[] = [];
-    try {
-      hits = await daya.memory.query(ns, prompt, topK);
-    } catch {
-      return base;
+  // --- @file mentions ---
+  private async resolveMentions(
+    prompt: string,
+  ): Promise<{ cleanPrompt: string; fileContents: { path: string; content: string }[] }> {
+    const mentionRegex = /@([^\s@][^\s@]*)/g;
+    const fileContents: { path: string; content: string }[] = [];
+    let cleanPrompt = prompt;
+
+    let match: RegExpExecArray | null;
+    while ((match = mentionRegex.exec(prompt)) !== null) {
+      const raw = match[1]!;
+      const filePath = isAbsolute(raw) ? raw : resolve(this.deps.cwd, raw);
+      try {
+        const s = await stat(filePath);
+        if (s.isFile()) {
+          const content = await readFile(filePath, 'utf8');
+          fileContents.push({ path: filePath, content });
+          this.filesReferenced.add(filePath);
+        }
+      } catch {
+        // file not found, ignore
+      }
     }
-    if (hits.length === 0) return base;
-    const lines = hits.map((h) => `- [${h.key}] ${h.value}`);
-    return `${base}\n\n## Relevant memories for this project\nThe following facts were remembered from prior sessions. Use them if relevant, ignore them if not.\n${lines.join('\n')}`;
+
+    if (fileContents.length > 0) {
+      const attachments = fileContents
+        .map((f) => `--- ${f.path} ---\n${f.content}`)
+        .join('\n\n');
+      cleanPrompt = `${prompt}\n\n## Attached files\n${attachments}`;
+    }
+
+    return { cleanPrompt, fileContents };
   }
 
+  // --- Architect mode (two-pass) ---
+  async runArchitect(
+    prompt: string,
+    options: AgentRunOptions = {},
+  ): Promise<{ plan: Message[]; execution: Message[] }> {
+    // Phase 1: Plan with current (strong) model
+    this.currentMode = 'plan';
+    options.onEvent?.({ type: 'context', data: { phase: 'planning', mode: 'plan' } });
+
+    const planMessages = await this.run(prompt, options);
+
+    // Phase 2: Execute with architectModel if configured
+    if (this.deps.architectModel) {
+      options.onEvent?.({ type: 'context', data: { phase: 'executing', mode: 'build' } });
+      this.currentMode = 'build';
+
+      const planText = planMessages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => m.content)
+        .join('\n\n');
+
+      const execPrompt = `Execute this plan:\n\n${planText}`;
+      const execMessages = await this.run(execPrompt, { ...options, history: [] });
+      return { plan: planMessages, execution: execMessages };
+    }
+
+    return { plan: planMessages, execution: [] };
+  }
+
+  // --- System prompt composition ---
+  private async composeSystem(base: string, prompt: string): Promise<string> {
+    let system = base;
+
+    // Add conventions
+    if (this.conventions) {
+      system += `\n\n## Project conventions\n${this.conventions}`;
+    }
+
+    // Add memories
+    const daya = this.deps.daya;
+    if (daya && daya.autoRecall !== false && daya.memory) {
+      const ns = daya.namespace ?? this.deps.cwd.replace(/\\/g, '/').toLowerCase();
+      const topK = daya.autoRecallTopK ?? 5;
+      try {
+        const hits = await daya.memory.query(ns, prompt, topK);
+        if (hits.length > 0) {
+          const lines = hits.map((h) => `- [${h.key}] ${h.value}`);
+          system += `\n\n## Relevant memories\nThe following facts were remembered from prior sessions. Use them if relevant, ignore them if not.\n${lines.join('\n')}`;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // Add mode suffix
+    system += this.currentMode === 'plan' ? PLAN_SUFFIX : BUILD_SUFFIX;
+
+    return system;
+  }
+
+  // --- Post-mutation hooks ---
+  private async runPostMutationHook(
+    cmd: string,
+    label: string,
+    signal: AbortSignal,
+    onEvent?: (e: AgentEvent) => void,
+  ): Promise<void> {
+    try {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const execFileAsync = promisify(execFile);
+      const result = await execFileAsync('bash', ['-c', cmd], {
+        cwd: this.deps.cwd,
+        timeout: 30000,
+        signal,
+      });
+      if (result.stderr) {
+        onEvent?.({ type: 'tool_output', data: { name: label, output: result.stderr } });
+      }
+    } catch {
+      // lint/test failure is non-fatal
+    }
+  }
+
+  // --- Auto-commit ---
+  async autoCommit(message: string, cwd: string, signal: AbortSignal): Promise<boolean> {
+    if (!this.deps.autoCommit) return false;
+    try {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const execFileAsync = promisify(execFile);
+      await execFileAsync('git', ['add', '-A'], { cwd, signal });
+      await execFileAsync('git', ['commit', '-m', message, '--allow-empty'], { cwd, signal });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async revertLastCommit(cwd: string, signal: AbortSignal): Promise<string> {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const execFileAsync = promisify(execFile);
+    const result = await execFileAsync('git', ['log', '-1', '--format=%H %s'], { cwd, signal });
+    const [hash] = result.stdout.trim().split(' ');
+    await execFileAsync('git', ['reset', '--hard', 'HEAD~1'], { cwd, signal });
+    return hash ?? 'unknown';
+  }
+
+  // --- Compaction ---
   private async compactIfNeeded(
     messages: Message[],
     maxTokens: number,
@@ -219,8 +553,38 @@ export class Agent {
     const estimated = this.estimateTokens(messages, system);
     const threshold = Math.floor(maxTokens * CONTEXT_COMPACTION_THRESHOLD);
     if (estimated < threshold) return;
+    if (messages.length <= 6) return;
 
-    // Keep the last 4 messages, summarize the rest
+    const keepRecent = 4;
+    const toCompact = messages.slice(0, messages.length - keepRecent);
+    const kept = messages.slice(messages.length - keepRecent);
+
+    const summary = toCompact
+      .filter((m) => m.role === 'assistant' || m.role === 'user')
+      .map((m) => {
+        const prefix = m.role === 'user' ? 'User' : 'Assistant';
+        const content = m.content.length > 200 ? m.content.slice(0, 200) + '...' : m.content;
+        return `${prefix}: ${content}`;
+      })
+      .join('\n');
+
+    const compactMsg: Message = {
+      id: nanoid(),
+      role: 'system',
+      content: `[Context compacted — earlier conversation summarized]\n${summary}`,
+      timestamp: Date.now(),
+    };
+
+    messages.length = 0;
+    messages.push(compactMsg, ...kept);
+
+    onEvent?.({ type: 'compacted', data: { removed: toCompact.length, kept: kept.length } });
+  }
+
+  compactManual(
+    messages: Message[],
+    onEvent?: (e: AgentEvent) => void,
+  ): void {
     if (messages.length <= 6) return;
 
     const keepRecent = 4;
@@ -295,20 +659,17 @@ export class Agent {
     calls: ToolCall[],
     ctx: { signal: AbortSignal; onEvent?: (e: AgentEvent) => void; onResult: (id: string, r: ToolResult) => void },
   ): Promise<void> {
-    // Identify mutating tools that must run sequentially
-    const mutatingTools = new Set(['write_file', 'edit_file', 'bash']);
     const mutating: ToolCall[] = [];
     const readonly: ToolCall[] = [];
 
     for (const call of calls) {
-      if (mutatingTools.has(call.name)) {
+      if (MUTATING_TOOLS.has(call.name)) {
         mutating.push(call);
       } else {
         readonly.push(call);
       }
     }
 
-    // Run read-only tools in parallel
     if (readonly.length > 0) {
       const results = await Promise.allSettled(
         readonly.map((call) => this.executeSingleTool(call, ctx)),
@@ -328,11 +689,36 @@ export class Agent {
       }
     }
 
-    // Run mutating tools sequentially
     for (const call of mutating) {
       if (ctx.signal.aborted) break;
       const result = await this.executeSingleTool(call, ctx);
       ctx.onResult(call.id, result);
+
+      // Track edited files for watcher/checkpoints
+      if (call.name === 'write_file' || call.name === 'edit_file') {
+        const filePath = (call.input as Record<string, string>)?.path;
+        if (filePath) {
+          const full = isAbsolute(filePath) ? filePath : resolve(this.deps.cwd, filePath);
+          this.trackedFiles.add(full);
+          this.filesReferenced.add(full);
+          this.watcher?.track(full);
+
+          // Run LSP diagnostics after edits
+          const diagnostics = await this.getDiagnosticsForFile(full);
+          if (diagnostics.length > 0) {
+            ctx.onEvent?.({
+              type: 'diagnostics',
+              data: { file: full, diagnostics },
+            });
+          }
+        }
+      }
+
+      // Auto-commit after file mutations
+      if (this.deps.autoCommit && (call.name === 'write_file' || call.name === 'edit_file')) {
+        const path = (call.input as Record<string, string>)?.path ?? 'unknown file';
+        await this.autoCommit(`daya: update ${path}`, this.deps.cwd, ctx.signal);
+      }
     }
   }
 
@@ -340,6 +726,16 @@ export class Agent {
     call: ToolCall,
     ctx: { signal: AbortSignal; onEvent?: (e: AgentEvent) => void },
   ): Promise<ToolResult> {
+    // Block mutating tools in plan mode
+    if (this.currentMode === 'plan' && MUTATING_TOOLS.has(call.name)) {
+      const result: ToolResult = {
+        output: `Tool "${call.name}" is not available in plan mode. Switch to build mode to make changes.`,
+        isError: true,
+      };
+      ctx.onEvent?.({ type: 'tool_finished', data: { id: call.id, name: call.name, result } });
+      return result;
+    }
+
     const tool = this.deps.tools.find((t) => t.definition.name === call.name);
     if (!tool) {
       const result: ToolResult = { output: `Tool "${call.name}" not found.`, isError: true };
@@ -374,4 +770,17 @@ export class Agent {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function loadConventions(cwd: string): Promise<string | undefined> {
+  const candidates = ['DAYA.md', 'AGENTS.md', 'CLAUDE.md', '.daya/conventions.md'];
+  for (const name of candidates) {
+    try {
+      const content = await readFile(resolve(cwd, name), 'utf8');
+      if (content.trim().length > 0) return content;
+    } catch {
+      // not found
+    }
+  }
+  return undefined;
 }

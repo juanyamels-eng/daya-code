@@ -50,6 +50,8 @@ export interface ProviderStreamParams {
   signal?: AbortSignal;
 }
 
+export type AgentMode = 'build' | 'plan';
+
 export interface ToolContext {
   cwd: string;
   signal: AbortSignal;
@@ -95,3 +97,11 @@ export const STOP_REASON_TOOL_USE = 'tool_use' as const;
 export const STOP_REASON_ERROR = 'error' as const;
 
 export type StopReason = typeof STOP_REASON_END_TURN | typeof STOP_REASON_TOOL_USE | typeof STOP_REASON_ERROR;
+
+export interface ContextInfo {
+  estimatedTokens: number;
+  maxTokens: number;
+  messageCount: number;
+  filesReferenced: string[];
+  mode: AgentMode;
+}

@@ -11,11 +11,12 @@ const cli = meow(
       $ daya [prompt]
 
     Options
-      --cwd <path>      Working directory (default: current)
-      --provider <name> mock | anthropic | openai | openrouter | daya
-      --model <name>    Model id
-      --auto            Run prompt non-interactively and exit
-      --help            Show this help
+      --cwd <path>        Working directory (default: current)
+      --provider <name>   mock | anthropic | openai | openrouter | daya
+      --model <name>      Model id
+      --auto              Run prompt non-interactively and exit
+      --architect         Two-pass mode: plan then execute
+      --help              Show this help
 
     Environment
       DAYA_API_KEY       API key for the DAYA provider
@@ -23,7 +24,7 @@ const cli = meow(
       OPENAI_API_KEY     API key when using --provider openai
       DAYA_PROVIDER      Override --provider
       DAYA_MODEL         Override --model
-`,
+  `,
   {
     importMeta: import.meta,
     flags: {
@@ -31,6 +32,7 @@ const cli = meow(
       provider: { type: 'string' },
       model: { type: 'string' },
       auto: { type: 'boolean', default: false },
+      architect: { type: 'boolean', default: false },
     },
   },
 );
@@ -70,6 +72,11 @@ async function main(): Promise<void> {
       baseUrl,
       cwd,
       sessionsDir: cfg.sessions.dir,
+      lintCmd: cfg.lintCmd,
+      testCmd: cfg.testCmd,
+      autoCommit: cfg.autoCommit,
+      architectModel: cfg.architectModel,
+      theme: cfg.theme,
     }),
   );
 }
