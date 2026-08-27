@@ -27,6 +27,7 @@ import {
   type PermissionDecision,
 } from '@daya-code/core';
 import { getTheme, THEME_NAMES, DEFAULT_THEME, type DayaTheme } from './themes.js';
+import { glyphs, type GlyphSet } from './glyphs.js';
 
 export interface AppProps {
   initialPrompt: string;
@@ -88,6 +89,7 @@ export function App(props: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const columns = stdout.columns ?? 80;
+  const g = glyphs();
   const [input, setInput] = useState('');
   const [mode, setMode] = useState<AgentMode>('build');
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -146,7 +148,7 @@ export function App(props: AppProps): React.ReactElement {
       });
       agentRef.current.startWatcher((changes) => {
         for (const change of changes) {
-          setLogs((prev) => [...prev, { kind: 'system', text: `\u23f1 ${change.type} ${change.path} (external)` }]);
+          setLogs((prev) => [...prev, { kind: 'system', text: `${change.type} ${change.path} (external)` }]);
         }
       });
 
@@ -165,7 +167,7 @@ export function App(props: AppProps): React.ReactElement {
       }
       initial.push({
         kind: 'system',
-        text: 'Tab toggles plan/build \u00b7 /help lists commands \u00b7 @file attaches',
+        text: `Tab toggles plan/build ${g.bullet} /help lists commands ${g.bullet} @file attaches`,
         meta: `theme: ${themeName}`,
       });
       setLogs(initial);
@@ -191,7 +193,7 @@ export function App(props: AppProps): React.ReactElement {
       setMode(next);
       modeRef.current = next;
       agentRef.current?.setMode(next);
-      setLogs((prev) => [...prev, { kind: 'system', text: `mode \u2192 ${next}` }]);
+      setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]);
     }
   });
 
@@ -275,7 +277,7 @@ export function App(props: AppProps): React.ReactElement {
         `  /quit           Exit`,
         ``,
         `Shortcuts`,
-        `  Tab             plan \u21c4 build`,
+        `  Tab             plan ${g.swap} build`,
         `  Ctrl+L          clear screen`,
         `  Shift+Enter     newline in prompt`,
         `  @path/file      attach a file`,
@@ -290,15 +292,15 @@ export function App(props: AppProps): React.ReactElement {
       setMode(next);
       modeRef.current = next;
       agentRef.current?.setMode(next);
-      setLogs((prev) => [...prev, { kind: 'system', text: `mode \u2192 ${next}` }]);
-      return;
-    }
+setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]);
+        return;
+      }
 
-    if (trimmed.startsWith('/theme')) {
+      if (trimmed.startsWith('/theme')) {
       const requested = trimmed.split(' ')[1];
       if (requested && THEME_NAMES.includes(requested)) {
         setThemeName(requested);
-        setLogs((prev) => [...prev, { kind: 'system', text: `theme \u2192 ${requested}` }]);
+        setLogs((prev) => [...prev, { kind: 'system', text: `theme ${g.arrow} ${requested}` }]);
       } else {
         setLogs((prev) => [
           ...prev,
@@ -323,8 +325,8 @@ export function App(props: AppProps): React.ReactElement {
           kind: 'system',
           text: [
             `context ~${est.toLocaleString()} / ${max.toLocaleString()} tokens (${pct}%)`,
-            `messages ${msgs} \u00b7 queries ${stats.queries} \u00b7 tools ${stats.toolsRun}`,
-            `mode ${info?.mode ?? 'build'} \u00b7 cost ${formatCost(totalCost)}`,
+            `messages ${msgs} ${g.bullet} queries ${stats.queries} ${g.bullet} tools ${stats.toolsRun}`,
+            `mode ${info?.mode ?? 'build'} ${g.bullet} cost ${formatCost(totalCost)}`,
             ...(files.length > 0 ? [`referenced files: ${files.length}`, ...files.map((f) => `  ${f}`)] : []),
           ].join('\n'),
           meta: 'context',
@@ -338,7 +340,7 @@ export function App(props: AppProps): React.ReactElement {
       agentRef.current?.compactManual(messagesRef.current, (ev) => {
         if (ev.type === 'compacted') {
           const { removed, kept } = ev.data as { removed: number; kept: number };
-          setLogs((prev) => [...prev, { kind: 'system', text: `compacted \u2014 summarized ${removed}, kept ${kept}` }]);
+          setLogs((prev) => [...prev, { kind: 'system', text: `compacted ${g.dash} summarized ${removed}, kept ${kept}` }]);
         }
       });
       if (messagesRef.current.length === before) {
@@ -356,7 +358,7 @@ export function App(props: AppProps): React.ReactElement {
       }
       const message = generateCommitMessage(diff);
       const ok = await agentRef.current.autoCommit(message, props.cwd, new AbortController().signal);
-      setLogs((prev) => [...prev, { kind: 'system', text: ok ? `committed \u2014 ${message}` : 'commit failed', meta: message }]);
+      setLogs((prev) => [...prev, { kind: 'system', text: ok ? `committed ${g.dash} ${message}` : 'commit failed', meta: message }]);
       return;
     }
 
@@ -364,7 +366,7 @@ export function App(props: AppProps): React.ReactElement {
       if (!agentRef.current) return;
       const label = trimmed === '/checkpoint' ? `cp-${Date.now()}` : trimmed.slice('/checkpoint '.length).trim();
       const id = await agentRef.current.saveCheckpoint(label, messagesRef.current);
-      setLogs((prev) => [...prev, { kind: 'system', text: `checkpoint \u2713 ${id} (${label})` }]);
+      setLogs((prev) => [...prev, { kind: 'system', text: `checkpoint ${g.check} ${id} (${label})` }]);
       return;
     }
 
@@ -372,14 +374,14 @@ export function App(props: AppProps): React.ReactElement {
       if (!agentRef.current) return;
       const cps = agentRef.current.getCheckpoints();
       if (cps.length === 0) {
-        setLogs((prev) => [...prev, { kind: 'system', text: 'no checkpoints yet \u2014 use /checkpoint <label>' }]);
+        setLogs((prev) => [...prev, { kind: 'system', text: `no checkpoints yet ${g.dash} use /checkpoint <label>` }]);
       } else {
         setLogs((prev) => [
           ...prev,
           {
             kind: 'system',
             text: cps.map((c) => `  ${c.id}  ${new Date(c.timestamp).toLocaleTimeString()}  ${c.label}`).join('\n'),
-            meta: `checkpoints (${cps.length}) \u00b7 /rollback <id> to restore`,
+            meta: `checkpoints (${cps.length}) ${g.bullet} /rollback <id> to restore`,
           },
         ]);
       }
@@ -393,7 +395,7 @@ export function App(props: AppProps): React.ReactElement {
       setLogs((prev) => [
         ...prev,
         ...(restored
-          ? [{ kind: 'system' as const, text: `restored ${id} \u2014 ${restored.length} messages, files reverted` }]
+          ? [{ kind: 'system' as const, text: `restored ${id} ${g.dash} ${restored.length} messages, files reverted` }]
           : [{ kind: 'system' as const, text: `checkpoint "${id}" not found` }]),
       ]);
       if (restored) messagesRef.current = restored;
@@ -438,7 +440,7 @@ export function App(props: AppProps): React.ReactElement {
       const key = body.slice(0, sepIdx).trim();
       const value = body.slice(sepIdx + 1).trim();
       const ok = await agentRef.current.saveMemory(key, value);
-      setLogs((prev) => [...prev, { kind: 'system', text: ok ? `memory saved \u2713 ${key}` : 'failed to save memory' }]);
+      setLogs((prev) => [...prev, { kind: 'system', text: ok ? `memory saved ${g.check} ${key}` : 'failed to save memory' }]);
       return;
     }
 
@@ -448,7 +450,7 @@ export function App(props: AppProps): React.ReactElement {
         const hash = await agentRef.current.revertLastCommit(props.cwd, new AbortController().signal);
         setLogs((prev) => [...prev, { kind: 'system', text: `reverted ${hash}` }]);
       } catch (e) {
-        setLogs((prev) => [...prev, { kind: 'system', text: `undo failed \u2014 ${e instanceof Error ? e.message : String(e)}` }]);
+        setLogs((prev) => [...prev, { kind: 'system', text: `undo failed ${g.dash} ${e instanceof Error ? e.message : String(e)}` }]);
       }
       return;
     }
@@ -468,7 +470,7 @@ export function App(props: AppProps): React.ReactElement {
       messagesRef.current = [...session.messages];
       sessionRef.current = id;
       setLogs([
-        { kind: 'system', text: `restored session ${id} \u2014 ${session.messages.length} messages` },
+        { kind: 'system', text: `restored session ${id} ${g.dash} ${session.messages.length} messages` },
         ...session.messages
           .filter((m) => m.role === 'user' || m.role === 'assistant')
           .map((m) => ({
@@ -517,7 +519,7 @@ export function App(props: AppProps): React.ReactElement {
           {
             kind: 'system',
             text: list.map((s) => `  ${s.id}  ${new Date(s.updatedAt).toLocaleString()}  ${s.title ?? '(untitled)'}`).join('\n'),
-            meta: `saved sessions (${list.length}) \u00b7 /restore <id> to resume`,
+            meta: `saved sessions (${list.length}) ${g.bullet} /restore <id> to resume`,
           },
         ]);
       }
@@ -536,7 +538,7 @@ export function App(props: AppProps): React.ReactElement {
       const md = await store.exportMarkdown(session);
       const filename = trimmed.split(' ')[1] ?? `daya-session-${sessionId}.md`;
       await writeFile(join(props.cwd, filename), md, 'utf8');
-      setLogs((prev) => [...prev, { kind: 'system', text: `exported \u2713 ${filename}` }]);
+      setLogs((prev) => [...prev, { kind: 'system', text: `exported ${g.check} ${filename}` }]);
       return;
     }
 
@@ -560,7 +562,7 @@ export function App(props: AppProps): React.ReactElement {
         architectModel: p.architectModel,
         memoryFile: join(p.cwd, 'DAYA.md'),
       });
-      setLogs((prev) => [...prev, { kind: 'system', text: `model \u2192 ${next}` }]);
+      setLogs((prev) => [...prev, { kind: 'system', text: `model ${g.arrow} ${next}` }]);
       return;
     }
 
@@ -574,7 +576,7 @@ export function App(props: AppProps): React.ReactElement {
         await runAgent(prompt, trimmed);
         return;
       }
-      setLogs((prev) => [...prev, { kind: 'system', text: `unknown command: /${cmdName} \u2014 use /help` }]);
+      setLogs((prev) => [...prev, { kind: 'system', text: `unknown command: /${cmdName} ${g.dash} use /help` }]);
       return;
     }
 
@@ -615,12 +617,12 @@ export function App(props: AppProps): React.ReactElement {
               const timing = toolTimingsRef.current[name];
               const elapsed = timing ? `${((Date.now() - timing.startedAt) / 1000).toFixed(1)}s` : '';
               delete toolTimingsRef.current[name];
-              const icon = result.isError ? '\u2717' : '\u2713';
+              const icon = result.isError ? g.cross : g.check;
               setLogs((prev) => [
                 ...prev,
                 {
                   kind: 'tool',
-                  text: `${icon} ${name}${elapsed ? `  \u00b7 ${elapsed}` : ''}`,
+                  text: `${icon} ${name}${elapsed ? `  ${g.bullet} ${elapsed}` : ''}`,
                   meta: result.output,
                   metaColor: result.isError ? theme.accents.error : theme.text.muted,
                 },
@@ -629,7 +631,7 @@ export function App(props: AppProps): React.ReactElement {
             }
             case 'compacted': {
               const { removed, kept } = ev.data as { removed: number; kept: number };
-              setLogs((prev) => [...prev, { kind: 'system', text: `compacted \u2014 summarized ${removed}, kept ${kept}` }]);
+              setLogs((prev) => [...prev, { kind: 'system', text: `compacted ${g.dash} summarized ${removed}, kept ${kept}` }]);
               break;
             }
             case 'diagnostics': {
@@ -644,8 +646,8 @@ export function App(props: AppProps): React.ReactElement {
                   ...prev,
                   {
                     kind: 'diag',
-                    text: `${errors.length} error${errors.length === 1 ? '' : 's'} \u00b7 ${warnings.length} warning${warnings.length === 1 ? '' : 's'} \u2014 ${file}`,
-                    meta: diagnostics.map((d) => `  ${d.line}:${d.column}  ${d.severity === 'error' ? '\u2717' : '\u26a0'} ${d.source}  ${d.message}`).join('\n'),
+                    text: `${errors.length} error${errors.length === 1 ? '' : 's'} ${g.bullet} ${warnings.length} warning${warnings.length === 1 ? '' : 's'} ${g.dash} ${file}`,
+                    meta: diagnostics.map((d) => `  ${d.line}:${d.column}  ${d.severity === 'error' ? g.cross : g.warn} ${d.source}  ${d.message}`).join('\n'),
                     metaColor: errors.length > 0 ? theme.accents.error : theme.accents.warning,
                   },
                 ]);
@@ -657,7 +659,7 @@ export function App(props: AppProps): React.ReactElement {
               break;
             }
             case 'error': {
-              setLogs((prev) => [...prev, { kind: 'system', text: `error \u2014 ${String(ev.data)}`, metaColor: theme.accents.error }]);
+              setLogs((prev) => [...prev, { kind: 'system', text: `error ${g.dash} ${String(ev.data)}`, metaColor: theme.accents.error }]);
               break;
             }
             default:
@@ -668,7 +670,7 @@ export function App(props: AppProps): React.ReactElement {
       const inputAfter = messagesRef.current.reduce((acc, m) => acc + Math.ceil(m.content.length / 4), 0);
       tokenStatsRef.current.inputTokens += Math.max(0, inputAfter - inputBefore);
     } catch (e) {
-      setLogs((prev) => [...prev, { kind: 'system', text: `error \u2014 ${e instanceof Error ? e.message : String(e)}`, metaColor: theme.accents.error }]);
+      setLogs((prev) => [...prev, { kind: 'system', text: `error ${g.dash} ${e instanceof Error ? e.message : String(e)}`, metaColor: theme.accents.error }]);
     } finally {
       setBusy(false);
       await saveSession();
@@ -687,14 +689,14 @@ export function App(props: AppProps): React.ReactElement {
       {/* Minimal header (Claude Code style — no box, no background) */}
       <Box justifyContent="space-between" width="100%">
         <Text color={theme.text.muted}>
-          {'\u273b'} DAYA Code {'\u00b7'} v0.5.0
+          {g.brand} DAYA Code {g.bullet} v0.5.0
         </Text>
         <Text color={theme.text.muted}>
-          {props.provider} {'\u00b7'} {props.model} {'\u00b7'} {themeName}
+          {props.provider} {' '} {props.model} {' '} {themeName}
         </Text>
       </Box>
       <Box marginBottom={1}>
-        <Text color={theme.text.muted}>{'\u2500'.repeat(Math.max(40, columns - 1))}</Text>
+        <Text color={theme.text.muted}>{g.hairline.repeat(Math.max(40, columns - 1))}</Text>
       </Box>
 
       {/* Messages */}
@@ -712,21 +714,23 @@ export function App(props: AppProps): React.ReactElement {
         {permissionPrompt && (
           <Box marginTop={1} flexDirection="column">
             <Text color={theme.accents.warning}>
-              {'\u26a0'} {describeAction(permissionPrompt.action)}
+              {g.warn} {describeAction(permissionPrompt.action)}
             </Text>
-            <Text color={theme.text.muted}>  y = yes {'\u00b7'} a = always {'\u00b7'} n = no</Text>
+            <Text color={theme.text.muted}>
+              y = yes {g.bullet} a = always {g.bullet} n = no
+            </Text>
           </Box>
         )}
       </Box>
 
       {/* Prompt */}
       <Box marginTop={1}>
-        <Text color={modeColor}>{mode === 'plan' ? '\u25e6' : '\u25cf'} </Text>
+        <Text color={modeColor}>{mode === 'plan' ? g.planDot : g.buildDot} </Text>
         <TextInput
           value={permissionPrompt ? permissionInput : input}
           onChange={permissionPrompt ? setPermissionInput : setInput}
           onSubmit={onSubmit}
-          placeholder={busy ? '(working\u2026)' : permissionPrompt ? 'y / a / n' : 'Ask DAYA something\u2026'}
+          placeholder={busy ? `(working${g.dots})` : permissionPrompt ? 'y / a / n' : `Ask DAYA something${g.dots}`}
         />
       </Box>
 
@@ -734,16 +738,13 @@ export function App(props: AppProps): React.ReactElement {
       <Box justifyContent="space-between" width="100%" marginTop={1}>
         <Text color={modeColor}>
           {busy ? 'running ' : `${mode} `}
-          {'\u00b7 '}
-          <Text color={theme.text.muted}>{busy ? 'ctrl+c to cancel' : 'ctrl+c exit \u00b7 /help \u00b7 tab plan/build'}</Text>
+          {g.bullet} <Text color={theme.text.muted}>{busy ? 'ctrl+c to cancel' : `ctrl+c exit ${g.bullet} /help ${g.bullet} tab plan/build`}</Text>
         </Text>
         <Text color={theme.text.muted}>
           {(usedTokens / 1000).toFixed(1)}k{' '}
-          {maxTokens > 0 ? `${'\u00b7'} ${contextPct}% ctx ` : ''}
-          {'\u00b7 '}
-          {formatCost(estimateCost(props.model, stats.inputTokens, stats.outputTokens))}
-          {' \u00b7 '}
-          {stats.toolsRun} tools
+          {maxTokens > 0 ? `${g.bullet} ${contextPct}% ctx ` : ''}
+          {g.bullet} {formatCost(estimateCost(props.model, stats.inputTokens, stats.outputTokens))}
+          {' '}{g.bullet} {stats.toolsRun} tools
         </Text>
       </Box>
     </Box>
@@ -775,7 +776,8 @@ class BridgePermissionChecker implements PermissionChecker {
   }
 }
 
-function MessageRow({ entry, theme }: { entry: LogEntry; theme: DayaTheme }): React.ReactElement {
+export function MessageRow({ entry, theme }: { entry: LogEntry; theme: DayaTheme }): React.ReactElement {
+  const g = glyphs();
   const isSpeech = entry.kind === 'user' || entry.kind === 'assistant';
 
   const color =
@@ -795,11 +797,11 @@ function MessageRow({ entry, theme }: { entry: LogEntry; theme: DayaTheme }): Re
     entry.kind === 'tool'
       ? ''
       : entry.kind === 'diag'
-        ? '\u26a0'
+        ? g.warn
         : entry.kind === 'diff'
-          ? '\u25b8'
+          ? g.right
           : entry.kind === 'system'
-            ? '\u00b7'
+            ? g.bullet
             : '';
 
   return (
@@ -821,7 +823,8 @@ function MessageRow({ entry, theme }: { entry: LogEntry; theme: DayaTheme }): Re
   );
 }
 
-function DiffMeta({ text, theme, forced }: { text: string; theme: DayaTheme; forced?: string }): React.ReactElement {
+export function DiffMeta({ text, theme, forced }: { text: string; theme: DayaTheme; forced?: string }): React.ReactElement {
+  const g = glyphs();
   const lines = text.split('\n');
   return (
     <Box flexDirection="column">
@@ -837,11 +840,10 @@ function DiffMeta({ text, theme, forced }: { text: string; theme: DayaTheme; for
             color = theme.accents.info;
           }
         }
-        const gutter = i === 0 ? '\u2514 ' : '\u2502 ';
+        const gutter = i === 0 ? g.gutterCorner : g.gutterBar;
         return (
           <Text key={i} color={color} wrap="wrap">
-            {gutter}
-            {line}
+            {gutter} {line}
           </Text>
         );
       })}
