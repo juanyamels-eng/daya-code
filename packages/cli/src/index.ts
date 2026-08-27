@@ -3,7 +3,7 @@ import meow from 'meow';
 import React from 'react';
 import { render } from 'ink';
 import { App } from './tui/App.js';
-import { loadConfig, envOverrides, type ProviderName } from '@daya-code/core';
+import { loadConfig, envOverrides, PRESET_NAMES, type ProviderName } from '@daya-code/core';
 
 const cli = meow(
   `
@@ -13,6 +13,7 @@ const cli = meow(
     Options
       --cwd <path>        Working directory (default: current)
       --provider <name>   mock | anthropic | openai | openrouter | daya | openai-compatible
+                          free presets: ${PRESET_NAMES.join(' | ')}
       --model <name>      Model id
       --base-url <url>    OpenAI-compatible API base URL (for openai-compatible providers)
       --api-key <key>     API key (overrides config/env)
@@ -28,10 +29,17 @@ const cli = meow(
       DAYA_MODEL         Override --model
       DAYA_BASE_URL      Override --base-url
 
-    Free providers (OpenAI-compatible endpoint + key)
-      --provider openai-compatible --base-url https://openrouter.ai/api/v1 --model deepseek/deepseek-chat:free
-      --provider openai-compatible --base-url https://generativelanguage.googleapis.com/v1beta/openai --model gemini-2.5-flash
-      --provider openai-compatible --base-url http://localhost:11434/v1 --model llama3.2  (Ollama, no key needed)
+    Free presets (permanent free tier, no credit card)
+      --provider groq            Llama 3.3 70B @ api.groq.com       (key: console.groq.com)
+      --provider cerebras        Llama 3.3 70B @ api.cerebras.ai    (key: cloud.cerebras.ai)
+      --provider gemini          Gemini 2.5 Flash, 1M ctx           (key: aistudio.google.com)
+      --provider github-models   GPT-4.1 / o4-mini via GitHub Models
+      --provider nvidia          DeepSeek, Qwen3, Llama via NVIDIA NIM
+      --provider mistral         mistral-small (1B tokens/month free)
+      --provider huggingface     Llama/Qwen via HuggingFace router
+      --provider ollama          Local models (no key) @ http://localhost:11434
+      --provider openrouter --model openrouter/free   auto-routes to any free model
+      --provider openai-compatible --base-url <url> --model <id>  any OpenAI-compatible endpoint
   `,
   {
     importMeta: import.meta,
@@ -47,7 +55,7 @@ const cli = meow(
   },
 );
 
-const VALID_PROVIDERS: ProviderName[] = ['mock', 'anthropic', 'openai', 'openrouter', 'daya', 'openai-compatible'];
+const VALID_PROVIDERS: ProviderName[] = ['mock', 'anthropic', 'openai', 'openrouter', 'daya', 'openai-compatible', ...PRESET_NAMES];
 
 async function main(): Promise<void> {
   const cfg = envOverrides(await loadConfig());

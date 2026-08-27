@@ -3,8 +3,17 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
+import { PROVIDER_PRESETS } from '../providers/registry.js';
 
-const ProviderNameSchema = z.enum(['mock', 'anthropic', 'openai', 'openrouter', 'daya', 'openai-compatible']);
+const ProviderNameSchema = z.enum([
+  'mock',
+  'anthropic',
+  'openai',
+  'openrouter',
+  'daya',
+  'openai-compatible',
+  ...Object.keys(PROVIDER_PRESETS),
+] as [string, ...string[]]);
 
 const ProviderConfigSchema = z.object({
   name: ProviderNameSchema,

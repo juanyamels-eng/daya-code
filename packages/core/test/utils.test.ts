@@ -9,7 +9,7 @@ import {
   generateCommitMessage,
 } from '../src/utils.js';
 import { Agent } from '../src/agent/loop.js';
-import { createProvider } from '../src/providers/registry.js';
+import { createProvider, PROVIDER_PRESETS, PRESET_NAMES } from '../src/providers/registry.js';
 import { envOverrides } from '../src/config/loader.js';
 import { MockProvider } from '../src/providers/mock.js';
 import { defaultTools } from '../src/tools/index.js';
@@ -285,5 +285,46 @@ describe('openai-compatible provider', () => {
     expect(cfg.provider.baseUrl).toBe('http://localhost:11434/v1');
     if (old) process.env.DAYA_BASE_URL = old;
     else delete process.env.DAYA_BASE_URL;
+  });
+});
+
+describe('free provider presets', () => {
+  it('exposes presets for the main free providers', () => {
+    expect(PRESET_NAMES).toContain('groq');
+    expect(PRESET_NAMES).toContain('gemini');
+    expect(PRESET_NAMES).toContain('ollama');
+    expect(PROVIDER_PRESETS['groq']!.baseUrl).toBe('https://api.groq.com/openai/v1');
+  });
+
+  it('creates a preset provider with its default base URL and model', () => {
+    const p = createProvider({ name: 'groq', model: 'mock-echo-v1', apiKey: 'k' });
+    expect(p.name).toBe('groq');
+    expect(p.model).toBe('llama-3.3-70b-versatile');
+  });
+
+  it('keeps an explicit model override on a preset', () => {
+    const p = createProvider({ name: 'groq', model: 'llama-4-scout-17b-16e-instruct', apiKey: 'k' });
+    expect(p.model).toBe('llama-4-scout-17b-16e-instruct');
+  });
+
+  it('ollama works without an api key', () => {
+    const p = createProvider({ name: 'ollama', model: 'x' });
+    expect(p.name).toBe('ollama');
+  });
+
+  it('falls back to mock when a keyed preset has no api key', () => {
+    const p = createProvider({ name: 'groq', model: 'x' });
+    expect(p.name).toBe('mock');
+  });
+
+  it('allows overriding baseUrl and model on a preset', () => {
+    const p = createProvider({
+      name: 'openai-compatible',
+      model: 'custom-model',
+      apiKey: 'k',
+      baseUrl: 'https://custom.example/v1',
+    });
+    expect(p.name).toBe('openai-compatible');
+    expect(p.model).toBe('custom-model');
   });
 });

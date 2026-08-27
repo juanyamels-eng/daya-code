@@ -4,7 +4,41 @@ import { streamText, type CoreMessage, type CoreTool } from 'ai';
 import type { Provider, ProviderEvent, ProviderStreamParams, ToolDefinition } from '../types.js';
 import { MockProvider } from './mock.js';
 
-export type ProviderName = 'mock' | 'anthropic' | 'openai' | 'openrouter' | 'daya' | 'openai-compatible';
+export type ProviderName =
+  | 'mock'
+  | 'anthropic'
+  | 'openai'
+  | 'openrouter'
+  | 'daya'
+  | 'openai-compatible'
+  | 'groq'
+  | 'cerebras'
+  | 'gemini'
+  | 'nvidia'
+  | 'mistral'
+  | 'github-models'
+  | 'huggingface'
+  | 'ollama';
+
+export interface ProviderPreset {
+  baseUrl: string;
+  model: string;
+  needsKey: boolean;
+}
+
+export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
+  groq: { baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', needsKey: true },
+  cerebras: { baseUrl: 'https://api.cerebras.ai/v1', model: 'llama-3.3-70b', needsKey: true },
+  gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash', needsKey: true },
+  openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: 'openrouter/free', needsKey: true },
+  nvidia: { baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'meta/llama-3.3-70b-instruct', needsKey: true },
+  mistral: { baseUrl: 'https://api.mistral.ai/v1', model: 'mistral-small-latest', needsKey: true },
+  'github-models': { baseUrl: 'https://models.github.ai/inference', model: 'gpt-4.1', needsKey: true },
+  huggingface: { baseUrl: 'https://router.huggingface.co/v1', model: 'meta-llama/Llama-3.3-70B-Instruct', needsKey: true },
+  ollama: { baseUrl: 'http://localhost:11434/v1', model: 'llama3.2', needsKey: false },
+};
+
+export const PRESET_NAMES = Object.keys(PROVIDER_PRESETS);
 
 export interface ProviderOptions {
   name: ProviderName;
@@ -14,23 +48,33 @@ export interface ProviderOptions {
 }
 
 export function createProvider(opts: ProviderOptions): Provider {
-  if (opts.name === 'mock' || !opts.apiKey) {
+  if (opts.name === 'mock') {
     return new MockProvider();
   }
-  if (opts.name === 'anthropic') return new AnthropicProvider(opts.apiKey, opts.model);
-  if (opts.name === 'openai') {
-    return new OpenAIProvider(opts.apiKey, opts.model, opts.baseUrl, 'openai');
+  if (opts.name === 'anthropic') {
+    if (!opts.apiKey) return new MockProvider();
+    return new AnthropicProvider(opts.apiKey, opts.model);
   }
-  if (opts.name === 'openai-compatible') {
-    return new OpenAIProvider(opts.apiKey, opts.model, opts.baseUrl, 'openai-compatible');
+  if (opts.name === 'openai' || opts.name === 'openai-compatible') {
+    if (!opts.apiKey) return new MockProvider();
+    return new OpenAIProvider(opts.apiKey, opts.model, opts.baseUrl, opts.name);
   }
-  if (opts.name === 'openrouter') {
-    return new OpenAIProvider(opts.apiKey, opts.model, 'https://openrouter.ai/api/v1', 'openrouter');
-  }
+  if (opts.name === 'openrouter') return openaiPreset('openrouter', opts);
   if (opts.name === 'daya') {
+    if (!opts.apiKey) return new MockProvider();
     return new OpenAIProvider(opts.apiKey, opts.model, 'https://api.daya.ai/v1', 'daya');
   }
+  if (opts.name in PROVIDER_PRESETS) return openaiPreset(opts.name, opts);
   throw new Error(`Unknown provider: ${opts.name}`);
+}
+
+function openaiPreset(name: string, opts: ProviderOptions): Provider {
+  const preset = PROVIDER_PRESETS[name]!;
+  if (!opts.apiKey && preset.needsKey) return new MockProvider();
+  const apiKey = opts.apiKey ?? 'ollama';
+  const baseUrl = opts.baseUrl ?? preset.baseUrl;
+  const model = opts.model === 'mock-echo-v1' ? preset.model : (opts.model || preset.model);
+  return new OpenAIProvider(apiKey, model, baseUrl, name);
 }
 
 export interface FallbackConfig {
