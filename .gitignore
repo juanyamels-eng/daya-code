@@ -12,6 +12,6 @@ coverage/
 *.db
 *.sqlite
 packages/cli/smoke-frame.txt
+packages/cli/smoke-convo.txt
 packages/cli/scripts/smoke-convo.bundle.mjs
 packages/cli/scripts/smoke-convo.mjs
-packages/cli/scripts/smoke-convo.txt

@@ -689,7 +689,7 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
       {/* Minimal header (Claude Code style — no box, no background) */}
       <Box justifyContent="space-between" width="100%">
         <Text color={theme.text.muted}>
-          {g.brand} DAYA Code {g.bullet} v0.5.0
+          {g.brand} DAYA Code {g.bullet} v0.5.1
         </Text>
         <Text color={theme.text.muted}>
           {props.provider} {' '} {props.model} {' '} {themeName}

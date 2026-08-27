@@ -1,6 +1,6 @@
 {
   "name": "daya-code",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Terminal code agent connected to the DAYA suite — AI images, web search, documents, persistent memory",
   "type": "module",
   "main": "./dist/index.js",
