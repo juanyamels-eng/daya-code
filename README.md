@@ -70,38 +70,6 @@ Memory persists across sessions. The agent remembers your preferences, project c
 
 ---
 
-## Providers
-
-| Provider | Flag | Env Var | Models |
-|----------|------|---------|--------|
-| `mock` | `--provider mock` | — | Default. No API key needed. |
-| `anthropic` | `--provider anthropic` | `ANTHROPIC_API_KEY` | Claude Sonnet 4.5, Haiku 4.5, Opus 4 |
-| `openai` | `--provider openai` | `OPENAI_API_KEY` | GPT-4o, GPT-4.1, o1, o3 |
-| `openrouter` | `--provider openrouter` | `OPENAI_API_KEY` | Multi-provider gateway |
-| `daya` | `--provider daya` | `DAYA_API_KEY` | Full DAYA suite access |
-
----
-
-## MCP Server
-
-DAYA Code includes an MCP server. Use it with Claude Desktop, Cursor, or any MCP client.
-
-```json
-// claude_desktop_config.json
-{
-  "mcpServers": {
-    "daya-code": {
-      "command": "daya-mcp",
-      "env": {
-        "DAYA_API_KEY": "daya-..."
-      }
-    }
-  }
-}
-```
-
----
-
 ## Roadmap
 
 - [x] **Phase 1** — Core agent loop, 6 tools, mock provider, Ink TUI
