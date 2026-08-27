@@ -1,134 +1,171 @@
-# DAYA Code
+<div align="center">
 
-[![npm version](https://img.shields.io/npm/v/daya-code.svg)](https://www.npmjs.com/package/daya-code)
-[![license](https://img.shields.io/npm/l/daya-code.svg)](https://github.com/juanyamels-eng/daya-code/blob/main/LICENSE)
-[![build](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/juanyamels-eng/daya-code)
+# ⚡ DAYA Code
 
-> Terminal code agent connected to the **DAYA suite** — AI images, web search, documents, and persistent memory.
+**The first terminal agent connected to a full AI suite.**
 
-DAYA Code is an open-source CLI agent (similar to Claude Code / OpenCode) that lives in your terminal, reads and edits your codebase, and is wired to DAYA's AI capabilities as native tools.
+Not just another code assistant. DAYA Code lives in your terminal, edits your code, generates images, searches the web, queries your documents, and remembers everything — all from one command.
+
+[![npm version](https://img.shields.io/npm/v/daya-code?style=flat-square&color=blue)](https://www.npmjs.com/package/daya-code)
+[![license](https://img.shields.io/npm/l/daya-code?style=flat-square)](https://github.com/juanyamels-eng/daya-code/blob/main/LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D22-brightgreen?style=flat-square)](https://nodejs.org)
+[![tests](https://img.shields.io/badge/tests-34%20passing-brightgreen?style=flat-square)](https://github.com/juanyamels-eng/daya-code)
+
+</div>
+
+---
 
 ## Demo
 
-```bash
-# Install globally
-npm install -g daya-code
+<!-- Replace this placeholder with a real GIF -->
 
-# Interactive mode (TUI)
-daya
+```
+$ daya "create a todo app with React and Tailwind"
 
-# Non-interactive mode
-daya --auto "list all TypeScript files in this project"
+✓ read_file  src/App.tsx
+✓ write_file src/App.tsx          — created React component
+✓ write_file src/index.css        — added Tailwind imports
+✓ bash       npm install tailwindcss
 
-# With a real provider
-export ANTHROPIC_API_KEY=sk-ant-...
-daya --provider anthropic --model claude-sonnet-4-5 --auto "refactor src/index.ts"
-
-# Generate an image
-export DAYA_API_KEY=daya-...
-daya --provider daya --auto "generate an image of a futuristic city at night"
-
-# Search the web
-daya --provider daya --auto "what is the latest version of Node.js?"
-
-# Query your documents
-daya --provider daya --auto "summarize the contents of docs/api.md"
+Done. Created 3 files in 12s.
 ```
 
-## Features
+> **Coming soon:** terminal recording showing real-time streaming, image generation, and web search.
 
-- **6 built-in tools**: `read_file`, `write_file`, `edit_file`, `bash`, `glob`, `grep`
-- **5 DAYA tools**: `daya_generate_image`, `daya_web_search`, `daya_documents_query`, `daya_memory_store`, `daya_memory_recall`
-- **4 providers**: Anthropic, OpenAI, OpenRouter, DAYA (via Vercel AI SDK)
-- **Ink TUI**: beautiful terminal interface with real-time streaming
-- **Persistent memory**: facts and preferences remembered across sessions
-- **MCP server**: expose all tools to any MCP-compatible client (Claude Desktop, Cursor, etc.)
+---
+
+## Why DAYA Code?
+
+Most terminal agents stop at reading and writing files. DAYA Code goes further.
+
+| Feature | Claude Code | OpenCode | **DAYA Code** |
+|---------|:-----------:|:--------:|:-------------:|
+| Read / write / edit files | ✅ | ✅ | ✅ |
+| Bash execution | ✅ | ✅ | ✅ |
+| Real-time streaming | ✅ | ✅ | ✅ |
+| Multiple providers | ❌ | ✅ | ✅ |
+| AI image generation | ❌ | ❌ | ✅ |
+| Web search | ❌ | ❌ | ✅ |
+| Document querying | ❌ | ❌ | ✅ |
+| Persistent memory | ❌ | ❌ | ✅ |
+| MCP server | ❌ | ❌ | ✅ |
+| Open source | ❌ | ✅ | ✅ |
+
+**In short:** other agents edit code. DAYA Code edits code **and** connects to a full AI suite — images, search, docs, memory — all native, no plugins needed.
+
+---
+
+## Quickstart
+
+### 1. Install
+
+```bash
+npm install -g daya-code
+```
+
+### 2. Run
+
+```bash
+# Interactive mode (beautiful TUI)
+daya
+
+# One-shot mode
+daya --auto "list all TypeScript files in this project"
+```
+
+### 3. Connect a provider (optional)
+
+```bash
+# Anthropic
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# OpenAI
+export OPENAI_API_KEY=sk-...
+
+# DAYA (full suite: images, search, docs, memory)
+export DAYA_API_KEY=daya-...
+
+daya --provider anthropic --auto "refactor src/index.ts"
+```
+
+> No API key? No problem. DAYA Code runs with a **mock provider** by default — perfect for exploring.
+
+---
+
+## DAYA Suite Tools
+
+When connected to a DAYA provider, you unlock 5 additional tools:
+
+| Tool | What it does |
+|------|-------------|
+| `daya_generate_image` | Generate images from text prompts |
+| `daya_web_search` | Search the web in real-time |
+| `daya_documents_query` | Query and summarize documents |
+| `daya_memory_store` | Save facts and preferences |
+| `daya_memory_recall` | Recall what was stored (with FTS5 search) |
+
+Memory persists across sessions. The agent remembers your preferences, project context, and past conversations.
+
+---
 
 ## Providers
 
-| Provider     | Flag               | Env var            | Notes |
-|--------------|--------------------|--------------------|-------|
-| `mock`       | `--provider mock`  | —                  | Default. No API key needed. |
-| `anthropic`  | `--provider anthropic` | `ANTHROPIC_API_KEY` | Claude models (Sonnet 4.5, Haiku 4.5, Opus 4). |
-| `openai`     | `--provider openai`    | `OPENAI_API_KEY`    | GPT-4o, GPT-4.1, o1, o3. |
-| `openrouter` | `--provider openrouter` | `OPENAI_API_KEY` (any) | Multi-provider gateway. |
-| `daya`       | `--provider daya`      | `DAYA_API_KEY`      | DAYA native endpoint (`https://api.daya.ai/v1`). |
+| Provider | Flag | Env Var | Models |
+|----------|------|---------|--------|
+| `mock` | `--provider mock` | — | Default. No API key needed. |
+| `anthropic` | `--provider anthropic` | `ANTHROPIC_API_KEY` | Claude Sonnet 4.5, Haiku 4.5, Opus 4 |
+| `openai` | `--provider openai` | `OPENAI_API_KEY` | GPT-4o, GPT-4.1, o1, o3 |
+| `openrouter` | `--provider openrouter` | `OPENAI_API_KEY` | Multi-provider gateway |
+| `daya` | `--provider daya` | `DAYA_API_KEY` | Full DAYA suite access |
 
-If the chosen provider has no API key set, the agent silently falls back to `mock`.
-
-## Slash commands (TUI)
-
-- `/quit` — exit
-- `/clear` — reset session
-- `/model <id>` — switch model on the fly without restarting
+---
 
 ## MCP Server
 
-DAYA Code includes an MCP (Model Context Protocol) server that exposes all tools to any MCP-compatible client.
+DAYA Code includes an MCP server. Use it with Claude Desktop, Cursor, or any MCP client.
 
-### Run the MCP server
-
-```bash
-# Install
-npm install -g daya-code
-
-# Start the MCP server (stdio transport)
-DAYA_API_KEY=daya-... daya-mcp
-
-# Or configure in Claude Desktop (claude_desktop_config.json):
+```json
+// claude_desktop_config.json
 {
   "mcpServers": {
     "daya-code": {
       "command": "daya-mcp",
       "env": {
-        "DAYA_API_KEY": "daya-...",
-        "DAYA_CWD": "/path/to/your/project"
+        "DAYA_API_KEY": "daya-..."
       }
     }
   }
 }
 ```
 
+---
+
 ## Roadmap
 
-- [x] **Fase 1 (MVP)** — Core agent loop, 6 file/bash tools, mock provider, Ink TUI
-- [x] **Fase 2** — Real providers (Anthropic, OpenAI, OpenRouter, DAYA), streaming, `/model` command
-- [x] **Fase 3** — DAYA suite tools (images, web search, documents, memory), local SQLite memory with FTS5, MCP server
-- [ ] **Fase 4** — Multi-file editing, plan mode, tool confirmation dialogs
-- [ ] **Fase 5** — Plugin system, custom tools, team collaboration
+- [x] **Phase 1** — Core agent loop, 6 tools, mock provider, Ink TUI
+- [x] **Phase 2** — Real providers, streaming, `/model` command
+- [x] **Phase 3** — DAYA suite tools, SQLite memory with FTS5, MCP server
+- [ ] **Phase 4** — Multi-file editing, plan mode, tool confirmations
+- [ ] **Phase 5** — Plugin system, custom tools, team collaboration
 
-## Project structure
+---
 
-```
-daya-code/
-├── packages/
-│   ├── core/        # @daya-code/core   — agent loop, providers, tools, sessions
-│   ├── cli/         # daya-code         — Ink TUI + CLI entry (published to npm)
-│   └── mcp-server/  # @daya-code/mcp-server — MCP server for external clients
-├── LICENSE
-└── package.json
-```
+## Contributing
 
-## Development
+Contributions welcome!
 
 ```bash
-# Clone
 git clone https://github.com/juanyamels-eng/daya-code.git
 cd daya-code
-
-# Install
 npm install
-
-# Build all packages
 npm run build
-
-# Run tests
 npm test
-
-# Run the TUI in dev mode
-npm run dev
 ```
+
+Please open an issue first to discuss what you'd like to change.
+
+---
 
 ## License
 
-MIT
+[MIT](LICENSE) © [juanyamels-eng](https://github.com/juanyamels-eng)
