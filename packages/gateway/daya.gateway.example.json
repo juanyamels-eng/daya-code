@@ -1,0 +1,14 @@
+{
+  "port": 8787,
+  "adminKey": "CHANGE_ME_ADMIN",
+  "upstreams": {
+    "groq": { "apiKey": "sk-groq-YOUR_KEY" },
+    "gemini": { "apiKey": "AIzaYOUR_GEMINI_KEY" },
+    "openrouter": { "apiKey": "sk-or-v1-YOUR_KEY" },
+    "ollama": { "baseUrl": "http://localhost:11434/v1" }
+  },
+  "users": [
+    { "name": "ana", "token": "user-token-ana-123", "enabled": true },
+    { "name": "bot", "token": "user-token-bot-456", "enabled": true, "quota": 2000000 }
+  ]
+}
