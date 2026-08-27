@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Box, Text, useApp, useInput } from 'ink';
+import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
@@ -86,6 +86,8 @@ function loadCustomPrompts(cwd: string): Record<string, string> {
 
 export function App(props: AppProps): React.ReactElement {
   const { exit } = useApp();
+  const { stdout } = useStdout();
+  const columns = stdout.columns ?? 80;
   const [input, setInput] = useState('');
   const [mode, setMode] = useState<AgentMode>('build');
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -156,7 +158,7 @@ export function App(props: AppProps): React.ReactElement {
 
       const tree = await buildFileTree(props.cwd, 2).catch(() => null);
       const initial: LogEntry[] = [
-        { kind: 'system', text: `v0.5.0 \u00b7 ${props.provider} \u00b7 ${props.model} \u00b7 ${props.cwd}` },
+        { kind: 'system', text: `${props.cwd}` },
       ];
       if (tree && formatFileTree(tree).trim()) {
         initial.push({ kind: 'system', text: formatFileTree(tree), meta: 'project structure' });
@@ -675,17 +677,24 @@ export function App(props: AppProps): React.ReactElement {
 
   const modeColor = mode === 'plan' ? theme.accents.plan : theme.accents.build;
   const stats = tokenStatsRef.current;
+  const info = agentRef.current?.getContextInfo();
+  const maxTokens = info?.maxTokens ?? 0;
+  const usedTokens = stats.inputTokens + stats.outputTokens;
+  const contextPct = maxTokens > 0 ? Math.min(100, Math.round((usedTokens / maxTokens) * 100)) : 0;
 
   return (
     <Box flexDirection="column">
       {/* Minimal header (Claude Code style — no box, no background) */}
-      <Box justifyContent="space-between" width="100%" marginBottom={1}>
+      <Box justifyContent="space-between" width="100%">
         <Text color={theme.text.muted}>
-          {'\u273b'} DAYA Code
+          {'\u273b'} DAYA Code {'\u00b7'} v0.5.0
         </Text>
         <Text color={theme.text.muted}>
           {props.provider} {'\u00b7'} {props.model} {'\u00b7'} {themeName}
         </Text>
+      </Box>
+      <Box marginBottom={1}>
+        <Text color={theme.text.muted}>{'\u2500'.repeat(Math.max(40, columns - 1))}</Text>
       </Box>
 
       {/* Messages */}
@@ -723,12 +732,18 @@ export function App(props: AppProps): React.ReactElement {
 
       {/* Status bar (bare, no border) */}
       <Box justifyContent="space-between" width="100%" marginTop={1}>
-        <Text color={theme.text.muted}>
-          {mode === 'plan' ? 'plan' : 'build'} {'\u00b7'} ctrl+c exit {'\u00b7'} /help {'\u00b7'} tab plan/build
+        <Text color={modeColor}>
+          {busy ? 'running ' : `${mode} `}
+          {'\u00b7 '}
+          <Text color={theme.text.muted}>{busy ? 'ctrl+c to cancel' : 'ctrl+c exit \u00b7 /help \u00b7 tab plan/build'}</Text>
         </Text>
         <Text color={theme.text.muted}>
-          {((stats.inputTokens + stats.outputTokens) / 1000).toFixed(1)}k tokens {'\u00b7'}{' '}
-          {formatCost(estimateCost(props.model, stats.inputTokens, stats.outputTokens))} {'\u00b7'} {stats.toolsRun} tools
+          {(usedTokens / 1000).toFixed(1)}k{' '}
+          {maxTokens > 0 ? `${'\u00b7'} ${contextPct}% ctx ` : ''}
+          {'\u00b7 '}
+          {formatCost(estimateCost(props.model, stats.inputTokens, stats.outputTokens))}
+          {' \u00b7 '}
+          {stats.toolsRun} tools
         </Text>
       </Box>
     </Box>
@@ -800,10 +815,36 @@ function MessageRow({ entry, theme }: { entry: LogEntry; theme: DayaTheme }): Re
         </Text>
       </Box>
       {entry.meta && (
-        <Text color={entry.metaColor ?? theme.text.muted} wrap="wrap">
-          {'  '}{'\u2514'} {entry.meta}
-        </Text>
+        <DiffMeta text={entry.meta} theme={theme} forced={entry.metaColor} />
       )}
+    </Box>
+  );
+}
+
+function DiffMeta({ text, theme, forced }: { text: string; theme: DayaTheme; forced?: string }): React.ReactElement {
+  const lines = text.split('\n');
+  return (
+    <Box flexDirection="column">
+      {lines.map((line, i) => {
+        const trimmed = line.trimStart();
+        let color = forced ?? theme.text.muted;
+        if (!forced) {
+          if (trimmed.startsWith('+') && !trimmed.startsWith('+++') && !trimmed.startsWith('+ git')) {
+            color = theme.accents.success;
+          } else if (trimmed.startsWith('-') && !trimmed.startsWith('---') && !trimmed.startsWith('- git')) {
+            color = theme.accents.error;
+          } else if (trimmed.startsWith('@@')) {
+            color = theme.accents.info;
+          }
+        }
+        const gutter = i === 0 ? '\u2514 ' : '\u2502 ';
+        return (
+          <Text key={i} color={color} wrap="wrap">
+            {gutter}
+            {line}
+          </Text>
+        );
+      })}
     </Box>
   );
 }
