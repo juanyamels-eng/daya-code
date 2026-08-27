@@ -13,13 +13,15 @@ export interface UsageRecord {
 }
 
 export class UsageStore {
-  private sums = new Map<string, { prompt: number; completion: number }>();
+  private sums = new Map<string, { prompt: number; completion: number; cost: number; requests: number }>();
   private loaded = false;
 
   constructor(private readonly file: string) {}
 
   private load(): void {
-    if (this.loaded || !existsSync(this.file)) return;
+    if (this.loaded) return;
+    this.loaded = true;
+    if (!existsSync(this.file)) return;
     const now = Date.now();
     const monthStart = new Date(now);
     monthStart.setDate(1);
@@ -31,9 +33,11 @@ export class UsageStore {
       try {
         const rec = JSON.parse(line) as UsageRecord;
         if (rec.ts >= start) {
-          const s = this.sums.get(rec.token) ?? { prompt: 0, completion: 0 };
+          const s = this.sums.get(rec.token) ?? { prompt: 0, completion: 0, cost: 0, requests: 0 };
           s.prompt += rec.promptTokens;
           s.completion += rec.completionTokens;
+          s.cost += rec.costUsd;
+          s.requests += 1;
           this.sums.set(rec.token, s);
         }
       } catch {
@@ -49,12 +53,22 @@ export class UsageStore {
     return s ? s.prompt + s.completion : 0;
   }
 
+  userStats(token: string): { monthTokens: number; monthCostUsd: number; requests: number } {
+    this.load();
+    const s = this.sums.get(token);
+    return s
+      ? { monthTokens: s.prompt + s.completion, monthCostUsd: s.cost, requests: s.requests }
+      : { monthTokens: 0, monthCostUsd: 0, requests: 0 };
+  }
+
   record(rec: UsageRecord): void {
     mkdirSync(dirname(this.file), { recursive: true });
     appendFileSync(this.file, JSON.stringify(rec) + '\n', 'utf8');
-    const s = this.sums.get(rec.token) ?? { prompt: 0, completion: 0 };
+    const s = this.sums.get(rec.token) ?? { prompt: 0, completion: 0, cost: 0, requests: 0 };
     s.prompt += rec.promptTokens;
     s.completion += rec.completionTokens;
+    s.cost += rec.costUsd;
+    s.requests += 1;
     this.sums.set(rec.token, s);
   }
 }

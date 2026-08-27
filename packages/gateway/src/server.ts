@@ -16,6 +16,11 @@ import {
   handleAdminDelete,
   handleAdminDashboard,
 } from './admin.js';
+import {
+  handlePortal,
+  handlePortalMe,
+  buildPortalStats,
+} from './portal.js';
 
 const MAX_BODY = 10 * 1024 * 1024;
 
@@ -256,6 +261,20 @@ export function createGateway(cfg: GatewayConfig, usage?: UsageStore): Server {
         const identity = authenticate(cfg, bearerToken(req));
         const name = decodeURIComponent(url.slice('/admin/api/users/'.length));
         return handleAdminDelete(cfg, identity, name, res);
+      }
+
+      // ---- User portal ----
+      if (url === '/portal' || url === '/portal/') {
+        return handlePortal(req.headers['host'] ? String(req.headers['host']) : undefined, res);
+      }
+      if (url === '/portal/api/me' && req.method === 'GET') {
+        const identity = authenticate(cfg, bearerToken(req));
+        return handlePortalMe(cfg, identity, (token) => {
+          const s = store.userStats(token);
+          const user = cfg.users.find((u) => u.token === token);
+          const id: Identity = { token, name: user?.name ?? 'user', admin: false, quota: user?.quota };
+          return buildPortalStats(id, s.monthTokens, s.monthCostUsd, s.requests);
+        }, res);
       }
 
       if (url !== '/v1/chat/completions' || req.method !== 'POST') {
