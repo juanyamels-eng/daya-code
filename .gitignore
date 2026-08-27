@@ -11,3 +11,4 @@ coverage/
 .daya/
 *.db
 *.sqlite
+packages/cli/smoke-frame.txt
