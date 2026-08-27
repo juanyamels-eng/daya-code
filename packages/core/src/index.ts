@@ -7,6 +7,7 @@ export * from './tools/daya/index.js';
 export * from './daya/client.js';
 export * from './dayamemory/local.js';
 export * from './dayamemory/store.js';
+export * from './dayamemory/project.js';
 export * from './permissions/checker.js';
 export * from './session/store.js';
 export * from './config/loader.js';

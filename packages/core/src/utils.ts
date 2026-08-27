@@ -211,7 +211,7 @@ export interface Checkpoint {
   id: string;
   label: string;
   timestamp: number;
-  messages: import('../types.js').Message[];
+  messages: import('./types.js').Message[];
   mode: string;
   filesSnapshot: Map<string, string>;
 }
@@ -222,7 +222,7 @@ export class CheckpointManager {
 
   async save(
     label: string,
-    messages: import('../types.js').Message[],
+    messages: import('./types.js').Message[],
     mode: string,
     cwd: string,
     trackedFiles: Set<string>,
@@ -261,7 +261,7 @@ export class CheckpointManager {
     return this.checkpoints[this.checkpoints.length - 1];
   }
 
-  restore(id: string): { messages: import('../types.js').Message[]; mode: string } | undefined {
+  restore(id: string): { messages: import('./types.js').Message[]; mode: string } | undefined {
     const cp = this.get(id);
     if (!cp) return undefined;
     return {

@@ -15,6 +15,7 @@ import type {
   ToolResult,
   AgentMode,
   ContextInfo,
+  EditReviewChange,
 } from '../types.js';
 import { DayaClient } from '../daya/client.js';
 import { LocalMemory } from '../dayamemory/local.js';
@@ -38,6 +39,8 @@ export interface AgentDeps {
   memoryFile?: string;
   checkpointDir?: string;
   watchFiles?: boolean;
+  maxSelfCorrections?: number;
+  requestApproval?: (change: EditReviewChange) => Promise<boolean>;
 }
 
 export interface AgentDayaConfig {
@@ -64,6 +67,7 @@ export interface AgentEvent {
     | 'diagnostics'
     | 'file_changed'
     | 'memory_saved'
+    | 'self_correct'
     | 'done'
     | 'error';
   data: unknown;
@@ -91,7 +95,11 @@ The user will switch to build mode when ready.`;
 
 const BUILD_SUFFIX = `\n\n## Current mode: BUILD
 You are in **build mode**. You can read, edit, and run commands.
-Execute the user's requests. After editing files, summarize what you changed.`;
+Execute the user's requests. After editing files, summarize what you changed.
+When a request involves multiple distinct steps, begin by listing the steps you plan to take as a checklist, e.g.:
+- [ ] Step one
+- [ ] Step two
+As you complete each step, rewrite that line to \`- [x] Step one\` so the user can follow progress. If the task is a single action, you may skip the checklist.`;
 
 const DEFAULT_MAX_STEPS = 25;
 const DEFAULT_MAX_TOKENS = 4096;
@@ -140,7 +148,7 @@ export class Agent {
     const restored = this.checkpoints.restore(id);
     if (!restored) return null;
     await this.checkpoints.restoreFiles(id);
-    this.currentMode = restored.mode;
+    this.currentMode = restored.mode as AgentMode;
     return restored.messages;
   }
 
@@ -299,6 +307,8 @@ export class Agent {
 
     let steps = 0;
     let consecutiveErrors = 0;
+    const maxSelfCorrections = this.deps.maxSelfCorrections ?? 2;
+    let selfCorrectionsUsed = 0;
 
     while (steps < maxSteps) {
       if (signal.aborted) throw new Error('aborted');
@@ -376,7 +386,7 @@ export class Agent {
         return messages;
       }
 
-      await this.executeToolCallsParallel(toolCalls, {
+      const toolResults = await this.executeToolCallsParallel(toolCalls, {
         signal,
         onEvent: options.onEvent,
         onResult: (id, result) => {
@@ -389,6 +399,28 @@ export class Agent {
           });
         },
       });
+
+      // Self-correction: if tools reported errors and we still have budget,
+      // feed the failures back to the model and let it fix its approach.
+      const failedTools = toolResults
+        .map((r, i) => (r.isError ? toolCalls[i]!.name : null))
+        .filter((n): n is string => n !== null);
+      if (failedTools.length > 0 && selfCorrectionsUsed < maxSelfCorrections && this.currentMode === 'build') {
+        selfCorrectionsUsed += 1;
+        const unique = [...new Set(failedTools)];
+        const feedback: Message = {
+          id: nanoid(),
+          role: 'system',
+          content:
+            `[Agent self-correction ${selfCorrectionsUsed}/${maxSelfCorrections}] The following tool call(s) failed: ${unique.join(', ')}. ` +
+            'Review the error output above, adjust your approach (re-read the file, use a different command, fix the arguments), and try again. ' +
+            'Do not repeat the exact same failing call.',
+          timestamp: Date.now(),
+        };
+        messages.push(feedback);
+        options.onEvent?.({ type: 'self_correct', data: { attempt: selfCorrectionsUsed, failed: unique } });
+        continue;
+      }
 
       // Run lint after mutating tools if configured
       if (this.deps.lintCmd) {
@@ -658,9 +690,10 @@ export class Agent {
   private async executeToolCallsParallel(
     calls: ToolCall[],
     ctx: { signal: AbortSignal; onEvent?: (e: AgentEvent) => void; onResult: (id: string, r: ToolResult) => void },
-  ): Promise<void> {
+  ): Promise<ToolResult[]> {
     const mutating: ToolCall[] = [];
     const readonly: ToolCall[] = [];
+    const results = new Map<string, ToolResult>();
 
     for (const call of calls) {
       if (MUTATING_TOOLS.has(call.name)) {
@@ -671,19 +704,21 @@ export class Agent {
     }
 
     if (readonly.length > 0) {
-      const results = await Promise.allSettled(
+      const settled = await Promise.allSettled(
         readonly.map((call) => this.executeSingleTool(call, ctx)),
       );
       for (let i = 0; i < readonly.length; i++) {
         const call = readonly[i]!;
-        const result = results[i]!;
+        const result = settled[i]!;
         if (result.status === 'fulfilled') {
+          results.set(call.id, result.value);
           ctx.onResult(call.id, result.value);
         } else {
           const errResult: ToolResult = {
             output: result.reason instanceof Error ? result.reason.message : String(result.reason),
             isError: true,
           };
+          results.set(call.id, errResult);
           ctx.onResult(call.id, errResult);
         }
       }
@@ -692,6 +727,7 @@ export class Agent {
     for (const call of mutating) {
       if (ctx.signal.aborted) break;
       const result = await this.executeSingleTool(call, ctx);
+      results.set(call.id, result);
       ctx.onResult(call.id, result);
 
       // Track edited files for watcher/checkpoints
@@ -720,6 +756,8 @@ export class Agent {
         await this.autoCommit(`daya: update ${path}`, this.deps.cwd, ctx.signal);
       }
     }
+
+    return calls.map((c) => results.get(c.id)!);
   }
 
   private async executeSingleTool(
@@ -751,6 +789,7 @@ export class Agent {
       permissions: this.deps.permissions,
       dayaClient: this.deps.daya?.client ?? null,
       memory: this.deps.daya?.memory ?? null,
+      requestApproval: this.deps.requestApproval,
     };
 
     try {

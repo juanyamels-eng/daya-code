@@ -8,6 +8,7 @@ export interface Candidate {
   apiKey: string;
   model: string;
   free: boolean;
+  headers?: Record<string, string>;
 }
 
 export class ModelNotAvailableError extends Error {
@@ -25,6 +26,7 @@ function resolveEntry(cfg: GatewayConfig, entry: CatalogEntry): Candidate {
     apiKey: up.apiKey ?? '',
     model: entry.upstreamModel,
     free: entry.free,
+    headers: up.headers,
   };
 }
 
@@ -70,6 +72,7 @@ export function resolveCandidates(cfg: GatewayConfig, model: string): Candidate[
           apiKey: up.apiKey ?? '',
           model: upstreamModel,
           free: false,
+          headers: up.headers,
         },
       ];
     }
@@ -118,23 +121,26 @@ async function callUpstream(
   body: Record<string, unknown>,
   isAdmin: boolean,
 ): Promise<UpstreamResult> {
-  const upstreamBody = { ...body, model: candidate.model };
-  if (isAdmin) {
-    upstreamBody['stream_options'] = { include_usage: true };
-  } else if ((body as { stream?: boolean }).stream === true) {
+  const upstreamBody: Record<string, unknown> = { ...body, model: candidate.model };
+  if (isAdmin || (body as { stream?: boolean }).stream === true) {
     upstreamBody['stream_options'] = { include_usage: true };
   }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120_000);
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    authorization: `Bearer ${candidate.apiKey}`,
+  };
+  const extra = candidate.headers;
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) headers[k] = v;
+  }
   let response;
   try {
     response = await fetch(`${candidate.baseUrl}/chat/completions`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${candidate.apiKey}`,
-      },
+      headers,
       body: JSON.stringify(upstreamBody),
       signal: controller.signal,
     });
@@ -144,13 +150,13 @@ async function callUpstream(
   }
   clearTimeout(timeout);
 
-  const headers: Record<string, string> = {};
-  if (response.headers.get('content-type')) headers['content-type'] = String(response.headers.get('content-type'));
+  const outHeaders: Record<string, string> = {};
+  if (response.headers.get('content-type')) outHeaders['content-type'] = String(response.headers.get('content-type'));
 
   return {
     ok: response.ok,
     status: response.status,
-    headers,
+    headers: outHeaders,
     body: response.body ? toAsyncIterable(response.body) : emptyBody(),
     completionTokens: 0,
   };
@@ -190,11 +196,12 @@ export async function forwardChat(
   const candidates = resolveCandidates(cfg, model);
   let lastError = undefined as { status: number } | undefined;
   for (let i = 0; i < candidates.length; i++) {
-    const result = await callUpstream(cfg, candidates[i], body, isAdmin);
+    const candidate = candidates[i]!;
+    const result = await callUpstream(cfg, candidate, body, isAdmin);
     if (result.ok) {
-      return { outcome: { candidates, chosen: candidates[i] }, result };
+      return { outcome: { candidates, chosen: candidate }, result };
     }
-    if (onUpstreamError) onUpstreamError(candidates[i], result.status);
+    if (onUpstreamError) onUpstreamError(candidate, result.status);
     lastError = { status: result.status };
     await result.body[Symbol.asyncIterator]().next();
   }
@@ -207,7 +214,8 @@ export async function forwardChat(
     body: jsonBody({ error: { message: errText, type: 'upstream_error' } }),
     completionTokens: 0,
   };
-  return { outcome: { candidates, chosen: candidates[candidates.length - 1] }, result };
+  const last = candidates[candidates.length - 1]!;
+  return { outcome: { candidates, chosen: last }, result };
 }
 
 export function jsonBody(obj: unknown): AsyncIterable<Uint8Array> {

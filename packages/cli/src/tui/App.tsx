@@ -17,6 +17,8 @@ import {
   formatCost,
   getGitDiff,
   generateCommitMessage,
+  projectMemory,
+  type LocalMemory,
   type AgentEvent,
   type AgentMode,
   type Message,
@@ -28,6 +30,7 @@ import {
 } from '@daya-code/core';
 import { getTheme, THEME_NAMES, DEFAULT_THEME, type DayaTheme } from './themes.js';
 import { glyphs, type GlyphSet } from './glyphs.js';
+import type { EditReviewChange } from '@daya-code/core';
 
 export interface AppProps {
   initialPrompt: string;
@@ -54,6 +57,11 @@ interface LogEntry {
 interface PermissionPrompt {
   action: PermissionAction;
   resolve: (decision: PermissionDecision) => void;
+}
+
+interface ReviewPrompt {
+  change: EditReviewChange;
+  resolve: (approved: boolean) => void;
 }
 
 interface ToolTiming {
@@ -96,6 +104,9 @@ export function App(props: AppProps): React.ReactElement {
   const [busy, setBusy] = useState(false);
   const [permissionPrompt, setPermissionPrompt] = useState<PermissionPrompt | null>(null);
   const [permissionInput, setPermissionInput] = useState('');
+  const [reviewPrompt, setReviewPrompt] = useState<ReviewPrompt | null>(null);
+  const reviewModeRef = useRef(false);
+  const [steps, setSteps] = useState<{ text: string; done: boolean }[]>([]);
   const [themeName, setThemeName] = useState(props.theme ?? DEFAULT_THEME);
   const theme = getTheme(themeName);
   const agentRef = useRef<Agent>();
@@ -105,6 +116,7 @@ export function App(props: AppProps): React.ReactElement {
   const abortRef = useRef<AbortController>();
   const sessionRef = useRef<string | null>(null);
   const storeRef = useRef<SessionStore | null>(null);
+  const projectMemoryRef = useRef<ReturnType<typeof projectMemory> | null>(null);
   const modeRef = useRef<AgentMode>(mode);
   const customPromptsRef = useRef<Record<string, string>>({});
   const permissionHandlerRef = useRef<((action: PermissionAction) => Promise<PermissionDecision>) | undefined>();
@@ -125,27 +137,42 @@ export function App(props: AppProps): React.ReactElement {
   }, []);
   permissionHandlerRef.current = handlePermission;
 
+  const handleReviewApproval = useCallback((change: EditReviewChange): Promise<boolean> => {
+    return new Promise((resolve) => {
+      setReviewPrompt({ change, resolve });
+    });
+  }, []);
+
+  const buildAgent = (p: AppProps): Agent => {
+    const pm = projectMemoryRef.current ?? projectMemory(p.cwd);
+    projectMemoryRef.current = pm;
+    return new Agent({
+      provider: makeProvider(p),
+      tools: defaultTools(),
+      permissions: new BridgePermissionChecker(permissionHandlerRef),
+      cwd: p.cwd,
+      conventions: loadConventionsSync(p.cwd),
+      lintCmd: p.lintCmd,
+      testCmd: p.testCmd,
+      autoCommit: p.autoCommit,
+      architectModel: p.architectModel,
+      memoryFile: join(p.cwd, 'DAYA.md'),
+      daya: {
+        memory: pm.memory,
+        namespace: pm.namespace,
+        autoRecall: true,
+      },
+      requestApproval: reviewModeRef.current ? handleReviewApproval : undefined,
+    });
+  };
+
   useEffect(() => {
     const store = props.sessionsDir ? new SessionStore(props.sessionsDir) : null;
     storeRef.current = store;
     customPromptsRef.current = loadCustomPrompts(props.cwd);
 
     (async () => {
-      const conventions = await loadConventions(props.cwd);
-
-      agentRef.current = new Agent({
-        provider: makeProvider(props),
-        tools: defaultTools(),
-        permissions: new BridgePermissionChecker(permissionHandlerRef),
-        cwd: props.cwd,
-        conventions,
-        lintCmd: props.lintCmd,
-        testCmd: props.testCmd,
-        autoCommit: props.autoCommit,
-        architectModel: props.architectModel,
-        memoryFile: join(props.cwd, 'DAYA.md'),
-        watchFiles: true,
-      });
+      agentRef.current = buildAgent(props);
       agentRef.current.startWatcher((changes) => {
         for (const change of changes) {
           setLogs((prev) => [...prev, { kind: 'system', text: `${change.type} ${change.path} (external)` }]);
@@ -227,6 +254,14 @@ export function App(props: AppProps): React.ReactElement {
   };
 
   const onSubmit = async (text: string): Promise<void> => {
+    if (reviewPrompt) {
+      const approved = ['y', 'yes', ''].includes(text.trim().toLowerCase());
+      const pending = reviewPrompt;
+      setReviewPrompt(null);
+      setInput('');
+      pending.resolve(approved);
+      return;
+    }
     if (permissionPrompt) {
       onPermissionSubmit(text);
       return;
@@ -266,13 +301,17 @@ export function App(props: AppProps): React.ReactElement {
         `  /checkpoints    List checkpoints`,
         `  /rollback <id>  Restore checkpoint`,
         `  /stats          Session analytics`,
+        `  /summary        Files touched, cost, time`,
         `  /mem <k>: <v>   Save memory to DAYA.md`,
+        `  /memlist        List project memory`,
+        `  /memforget <k>  Delete a memory`,
         `  /undo           Revert last commit`,
         `  /restore <id>   Resume session`,
         `  /search <q>     Search sessions`,
         `  /sessions       List sessions`,
         `  /export [file]  Export to markdown`,
         `  /model <id>     Switch model`,
+        `  /review         Toggle hunk review (approve each edit)`,
         `  /clear          Clear screen`,
         `  /quit           Exit`,
         ``,
@@ -402,6 +441,12 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
       return;
     }
 
+    if (trimmed === '/summary') {
+      const summary = buildSessionSummary();
+      setLogs((prev) => [...prev, { kind: 'system', text: summary, meta: 'session summary' }]);
+      return;
+    }
+
     if (trimmed === '/stats') {
       const stats = tokenStatsRef.current;
       const msgs = messagesRef.current.length;
@@ -441,6 +486,40 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
       const value = body.slice(sepIdx + 1).trim();
       const ok = await agentRef.current.saveMemory(key, value);
       setLogs((prev) => [...prev, { kind: 'system', text: ok ? `memory saved ${g.check} ${key}` : 'failed to save memory' }]);
+      return;
+    }
+
+    if (trimmed === '/memlist' || trimmed === '/mems') {
+      const pm = projectMemoryRef.current;
+      if (!pm) {
+        setLogs((prev) => [...prev, { kind: 'system', text: 'project memory not configured' }]);
+        return;
+      }
+      const entries = await pm.memory.list(pm.namespace, 50);
+      if (entries.length === 0) {
+        setLogs((prev) => [...prev, { kind: 'system', text: 'no memories stored for this project yet' }]);
+      } else {
+        setLogs((prev) => [
+          ...prev,
+          {
+            kind: 'system',
+            text: entries.map((e) => `  ${e.key}: ${e.value}`).join('\n'),
+            meta: `project memory (${entries.length}) ${g.bullet} auto-recalled each run ${g.bullet} /memforget <key> to delete`,
+          },
+        ]);
+      }
+      return;
+    }
+
+    if (trimmed.startsWith('/memforget ')) {
+      const pm = projectMemoryRef.current;
+      if (!pm) {
+        setLogs((prev) => [...prev, { kind: 'system', text: 'project memory not configured' }]);
+        return;
+      }
+      const key = trimmed.slice('/memforget '.length).trim();
+      const removed = await pm.memory.delete(pm.namespace, key);
+      setLogs((prev) => [...prev, { kind: 'system', text: removed ? `memory deleted ${g.check} ${key}` : `no memory "${key}" found` }]);
       return;
     }
 
@@ -550,19 +629,16 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
       }
       const p = { ...propsRef.current, model: next };
       propsRef.current = p;
-      agentRef.current = new Agent({
-        provider: makeProvider(p),
-        tools: defaultTools(),
-        permissions: new BridgePermissionChecker(permissionHandlerRef),
-        cwd: p.cwd,
-        conventions: loadConventionsSync(p.cwd),
-        lintCmd: p.lintCmd,
-        testCmd: p.testCmd,
-        autoCommit: p.autoCommit,
-        architectModel: p.architectModel,
-        memoryFile: join(p.cwd, 'DAYA.md'),
-      });
+      agentRef.current = buildAgent(p);
       setLogs((prev) => [...prev, { kind: 'system', text: `model ${g.arrow} ${next}` }]);
+      return;
+    }
+
+    if (trimmed === '/review') {
+      reviewModeRef.current = !reviewModeRef.current;
+      const p = propsRef.current;
+      agentRef.current = buildAgent(p);
+      setLogs((prev) => [...prev, { kind: 'system', text: `hunk review ${g.arrow} ${reviewModeRef.current ? 'ON' : 'OFF'}` }]);
       return;
     }
 
@@ -586,6 +662,7 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
   const runAgent = async (prompt: string, displayText: string): Promise<void> => {
     setLogs((prev) => [...prev, { kind: 'user', text: displayText }]);
     setBusy(true);
+    setSteps([]);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     let assistantBuffer = '';
@@ -602,6 +679,7 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
             case 'assistant_text_delta': {
               assistantBuffer += (ev.data as { delta: string }).delta;
               tokenStatsRef.current.outputTokens += Math.max(1, Math.ceil((ev.data as { delta: string }).delta.length / 4));
+              setSteps(parseSteps(assistantBuffer));
               setLogs((prev) => upsertAssistant(prev, assistantBuffer));
               break;
             }
@@ -656,6 +734,9 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
             }
             case 'done': {
               messagesRef.current = (ev.data as { messages: Message[] }).messages;
+              if (tokenStatsRef.current.toolsRun > 0) {
+                setLogs((prev) => [...prev, { kind: 'system', text: `summary ${g.dash} ${buildSessionSummary()}`, meta: 'run complete · /summary to re-view' }]);
+              }
               break;
             }
             case 'error': {
@@ -669,12 +750,47 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
       });
       const inputAfter = messagesRef.current.reduce((acc, m) => acc + Math.ceil(m.content.length / 4), 0);
       tokenStatsRef.current.inputTokens += Math.max(0, inputAfter - inputBefore);
+      await agentRef.current!.persistMemories(messagesRef.current);
     } catch (e) {
       setLogs((prev) => [...prev, { kind: 'system', text: `error ${g.dash} ${e instanceof Error ? e.message : String(e)}`, metaColor: theme.accents.error }]);
     } finally {
       setBusy(false);
       await saveSession();
     }
+  };
+
+  const buildSessionSummary = (): string => {
+    const stats = tokenStatsRef.current;
+    const msgs = messagesRef.current;
+    const changed = new Map<string, string>();
+    for (const m of msgs) {
+      if (m.toolCalls) {
+        for (const tc of m.toolCalls) {
+          if (tc.name === 'write_file' || tc.name === 'edit_file') {
+            const p = (tc.input as Record<string, unknown>)?.path;
+            if (typeof p === 'string') changed.set(p, tc.name);
+          }
+        }
+      }
+    }
+    const cost = estimateCost(props.model, stats.inputTokens, stats.outputTokens);
+    const elapsedMs = Date.now() - perfStartRef.current;
+    const elapsed = new Date(elapsedMs).toISOString().substr(11, 8);
+    const lines: string[] = [
+      `Session summary`,
+      `  messages  ${msgs.length}`,
+      `  queries   ${stats.queries}`,
+      `  tools run ${stats.toolsRun}`,
+      `  cost      ${formatCost(cost)}`,
+      `  elapsed   ${elapsed}`,
+    ];
+    if (changed.size > 0) {
+      lines.push(`  files touched (${changed.size})`);
+      for (const [p, kind] of changed) lines.push(`    ${kind === 'write_file' ? 'W' : 'E'}  ${p}`);
+    } else {
+      lines.push('  files touched  (none)');
+    }
+    return lines.join('\n');
   };
 
   const modeColor = mode === 'plan' ? theme.accents.plan : theme.accents.build;
@@ -704,6 +820,16 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
         {logs.map((entry, i) => (
           <MessageRow key={i} entry={entry} theme={theme} />
         ))}
+        {steps.length > 0 && (
+          <Box flexDirection="column">
+            {steps.map((s, i) => (
+              <Text key={i} color={s.done ? theme.accents.success : theme.text.primary}>
+                {s.done ? `${g.check} ` : `${g.planDot} `}
+                {s.text}
+              </Text>
+            ))}
+          </Box>
+        )}
         {busy && (
           <Box marginTop={1}>
             <Text color={theme.text.muted}>
@@ -721,6 +847,23 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
             </Text>
           </Box>
         )}
+        {reviewPrompt && (
+          <Box marginTop={1} flexDirection="column">
+            <Text color={theme.accents.warning}>
+              {g.warn} review {reviewPrompt.change.kind} {g.dash} {reviewPrompt.change.path}
+              {reviewPrompt.change.occurrences ? ` (${reviewPrompt.change.occurrences} match${reviewPrompt.change.occurrences > 1 ? 'es' : ''})` : ''}
+            </Text>
+            {reviewPrompt.change.old_text && (
+              <DiffMeta text={formatChangeDiff(reviewPrompt.change)} theme={theme} />
+            )}
+            {!reviewPrompt.change.old_text && (
+              <DiffMeta text={`+ [write] ${reviewPrompt.change.new_text.slice(0, 120)}${reviewPrompt.change.new_text.length > 120 ? g.dots : ''}`} theme={theme} forced={theme.accents.success} />
+            )}
+            <Text color={theme.text.muted}>
+              y = apply {g.bullet} n = reject
+            </Text>
+          </Box>
+        )}
       </Box>
 
       {/* Prompt */}
@@ -730,7 +873,7 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
           value={permissionPrompt ? permissionInput : input}
           onChange={permissionPrompt ? setPermissionInput : setInput}
           onSubmit={onSubmit}
-          placeholder={busy ? `(working${g.dots})` : permissionPrompt ? 'y / a / n' : `Ask DAYA something${g.dots}`}
+          placeholder={busy ? `(working${g.dots})` : reviewPrompt ? 'y = apply / n = reject' : permissionPrompt ? 'y / a / n' : `Ask DAYA something${g.dots}`}
         />
       </Box>
 
@@ -865,6 +1008,34 @@ function loadConventionsSync(cwd: string): string | undefined {
     }
   }
   return undefined;
+}
+
+function formatChangeDiff(change: EditReviewChange): string {
+  const oldLines = (change.old_text ?? '').split('\n');
+  const newLines = change.new_text.split('\n');
+  const max = Math.max(oldLines.length, newLines.length);
+  const out: string[] = [];
+  for (let i = 0; i < max; i++) {
+    if (i < oldLines.length) out.push(`-${oldLines[i]}`);
+    if (i < newLines.length) out.push(`+${newLines[i]}`);
+  }
+  return out.join('\n');
+}
+
+function parseSteps(text: string): { text: string; done: boolean }[] {
+  const steps: { text: string; done: boolean }[] = [];
+  const seen = new Set<string>();
+  const re = /(?:^|\n)[ \t]*[-*] \[([ xX])\][ \t]*(.+)$/gm;
+  let m: RegExpExecArray | null;
+  let dedupeKey: string;
+  while ((m = re.exec(text)) !== null) {
+    const body = m[2]!.trim();
+    const key = body.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    steps.push({ text: body, done: m[1] !== ' ' });
+  }
+  return steps;
 }
 
 function upsertAssistant(logs: LogEntry[], text: string): LogEntry[] {

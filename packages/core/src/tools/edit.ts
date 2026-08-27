@@ -27,6 +27,17 @@ export async function editFileSafe(input: unknown, ctx: ToolContext): Promise<To
       );
     }
 
+    if (ctx.requestApproval) {
+      const approved = await ctx.requestApproval({
+        kind: 'edit',
+        path: abs,
+        old_text: old_string,
+        new_text: new_string,
+        occurrences,
+      });
+      if (!approved) return err(`Edit rejected by the user: ${abs}`);
+    }
+
     const updated = all_occurrences
       ? original.split(old_string).join(new_string)
       : original.replace(old_string, new_string);

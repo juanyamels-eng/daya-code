@@ -158,3 +158,37 @@ describe('bash tool', () => {
     await rm(dir, { recursive: true, force: true });
   });
 });
+
+describe('hunk review (requestApproval)', () => {
+  it('edit_file requests approval before writing and rejects on denial', async () => {
+    const dir = join(tmpdir(), `daya-test-${Date.now()}`);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'a.txt'), 'one two', 'utf8');
+    const tools = defaultTools();
+    const edit = tools.find((t) => t.definition.name === 'edit_file')!;
+    let asked: unknown = null;
+    const res = await edit.execute(
+      { path: join(dir, 'a.txt'), old_string: 'one', new_string: 'uno' },
+      { cwd: dir, signal: new AbortController().signal, permissions: new AllowAllChecker(), requestApproval: async (c) => { asked = c; return false; } },
+    );
+    expect(res.isError).toBe(true);
+    expect((asked as { path: string; old_text: string }).old_text).toBe('one');
+    const still = await readFile(join(dir, 'a.txt'), 'utf8');
+    expect(still).toBe('one two');
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('write_file requests approval and applies on approval', async () => {
+    const dir = join(tmpdir(), `daya-test-${Date.now()}`);
+    await mkdir(dir, { recursive: true });
+    const tools = defaultTools();
+    const write = tools.find((t) => t.definition.name === 'write_file')!;
+    const res = await write.execute(
+      { path: join(dir, 'new.txt'), content: 'hello' },
+      { cwd: dir, signal: new AbortController().signal, permissions: new AllowAllChecker(), requestApproval: async () => true },
+    );
+    expect(res.isError).toBeFalsy();
+    expect(await readFile(join(dir, 'new.txt'), 'utf8')).toBe('hello');
+    await rm(dir, { recursive: true, force: true });
+  });
+});

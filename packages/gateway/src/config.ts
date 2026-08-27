@@ -1,10 +1,12 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 
 export interface Upstream {
   baseUrl: string;
   apiKey?: string;
+  headers?: Record<string, string>;
 }
 
 export interface GatewayUser {
@@ -44,6 +46,16 @@ const ENV_KEY: Record<string, string> = {
   ollama: 'OLLAMA_API_KEY',
 };
 
+export function defaultUpstreamHeaders(name: string): Record<string, string> | undefined {
+  if (name === 'openrouter') {
+    // Enable OpenRouter automatic prompt caching: repeated conversation
+    // prefixes are served from cache at a steep discount. :path tags the
+    // cache bucket with the request's route so identical prefixes reuse it.
+    return { ':path': '/api/v1/chat/completions' };
+  }
+  return undefined;
+}
+
 interface RawConfig {
   port?: number;
   adminKey?: string;
@@ -72,9 +84,11 @@ export function loadConfig(): GatewayConfig {
   const upstreams: Record<string, Upstream> = {};
   for (const [name, def] of Object.entries(DEFAULT_UPSTREAMS)) {
     const override = raw.upstreams?.[name] ?? {};
+    const envKey = ENV_KEY[name];
     upstreams[name] = {
       baseUrl: override.baseUrl ?? def.baseUrl,
-      apiKey: override.apiKey ?? process.env[ENV_KEY[name]] ?? def.apiKey,
+      apiKey: override.apiKey ?? (envKey ? process.env[envKey] : undefined) ?? def.apiKey,
+      headers: override.headers ?? defaultUpstreamHeaders(name),
     };
   }
 
@@ -92,4 +106,52 @@ export function loadConfig(): GatewayConfig {
     users,
     usageFile: raw.usageFile ?? process.env['GATEWAY_USAGE_FILE'] ?? join(homedir(), '.daya', 'gateway', 'usage.jsonl'),
   };
+}
+
+/** Returns the config file we persist admin edits to (first existing, else the first candidate). */
+export function configFilePath(existing: GatewayConfig): string {
+  for (const file of configCandidates()) {
+    if (existsSync(file)) return file;
+  }
+  return process.env['GATEWAY_CONFIG'] ?? join(process.cwd(), 'daya.gateway.json');
+}
+
+/** Read the config file (or the accumulated env/upstream view) as a mutable JSON object. */
+export function readConfigFile(path: string): RawConfig {
+  if (existsSync(path)) {
+    return JSON.parse(readFileSync(path, 'utf8')) as RawConfig;
+  }
+  return {};
+}
+
+export function writeConfigFile(path: string, raw: RawConfig): void {
+  writeFileSync(path, JSON.stringify(raw, null, 2) + '\n', 'utf8');
+}
+
+export function upsertUser(raw: RawConfig, user: Partial<GatewayUser> & { name: string }): GatewayUser {
+  raw.users = raw.users ?? [];
+  const existing = raw.users.find((u) => u.name === user.name);
+  const next: GatewayUser = {
+    name: user.name,
+    token: existing?.token ?? user.token ?? randomToken(),
+    enabled: user.enabled ?? existing?.enabled ?? true,
+    quota: user.quota !== undefined ? user.quota : existing?.quota,
+  };
+  if (existing) {
+    Object.assign(existing, next);
+  } else {
+    (raw.users as GatewayUser[]).push(next);
+  }
+  return next;
+}
+
+export function removeUser(raw: RawConfig, name: string): boolean {
+  if (!raw.users) return false;
+  const before = raw.users.length;
+  raw.users = raw.users.filter((u) => u.name !== name);
+  return raw.users.length !== before;
+}
+
+export function randomToken(bytes = 24): string {
+  return 'daya_' + randomBytes(bytes).toString('hex');
 }

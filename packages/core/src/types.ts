@@ -59,12 +59,21 @@ export interface ToolContext {
   emit?: (event: ToolEvent) => void;
   dayaClient?: DayaClient | null;
   memory?: LocalMemory | null;
+  requestApproval?: (change: EditReviewChange) => Promise<boolean>;
 }
 
 export type ToolEvent =
   | { type: 'started'; name: string; input: unknown }
   | { type: 'output'; name: string; chunk: string }
   | { type: 'finished'; name: string; result: ToolResult };
+
+export interface EditReviewChange {
+  kind: 'edit' | 'write';
+  path: string;
+  old_text?: string;
+  new_text: string;
+  occurrences?: number;
+}
 
 export interface ToolResult {
   output: string;

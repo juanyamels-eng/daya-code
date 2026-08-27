@@ -3,6 +3,7 @@ import {
   defaultTools,
   AllowAllChecker,
   createProvider,
+  projectMemory,
   type ProviderName,
 } from '@daya-code/core';
 
@@ -16,6 +17,7 @@ export interface RunOnceOpts {
 }
 
 export async function runOnce(opts: RunOnceOpts): Promise<void> {
+  const pm = projectMemory(opts.cwd);
   const agent = new Agent({
     provider: createProvider({
       name: opts.provider,
@@ -26,9 +28,14 @@ export async function runOnce(opts: RunOnceOpts): Promise<void> {
     tools: defaultTools(),
     permissions: new AllowAllChecker(),
     cwd: opts.cwd,
+    daya: {
+      memory: pm.memory,
+      namespace: pm.namespace,
+      autoRecall: true,
+    },
   });
 
-  await agent.run(opts.prompt, {
+  const messages = await agent.run(opts.prompt, {
     onEvent: (e) => {
       if (e.type === 'assistant_text_delta') {
         const d = (e.data as { delta: string }).delta;
@@ -41,4 +48,5 @@ export async function runOnce(opts: RunOnceOpts): Promise<void> {
       }
     },
   });
+  await agent.persistMemories(messages);
 }

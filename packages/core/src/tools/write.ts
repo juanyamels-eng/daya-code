@@ -15,6 +15,14 @@ export async function writeFileSafe(input: unknown, ctx: ToolContext): Promise<T
 
   const fs = await import('node:fs/promises');
   try {
+    if (ctx.requestApproval) {
+      const approved = await ctx.requestApproval({
+        kind: 'write',
+        path: abs,
+        new_text: content,
+      });
+      if (!approved) return err(`Write rejected by the user: ${abs}`);
+    }
     await fs.mkdir(dirname(abs), { recursive: true });
     await fs.writeFile(abs, content, 'utf8');
     return ok(`Wrote ${content.length} bytes to ${abs}`, { path: abs, bytes: content.length });

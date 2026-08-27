@@ -10,6 +10,12 @@ import {
   recordCost,
   type UpstreamResult,
 } from './proxy.js';
+import {
+  handleAdminList,
+  handleAdminUpsert,
+  handleAdminDelete,
+  handleAdminDashboard,
+} from './admin.js';
 
 const MAX_BODY = 10 * 1024 * 1024;
 
@@ -54,7 +60,7 @@ export function bearerToken(req: IncomingMessage): string | undefined {
   const auth = req.headers['authorization'];
   if (!auth) return undefined;
   const match = /^Bearer\s+(.+)$/i.exec(auth);
-  return match ? match[1].trim() : undefined;
+  return match ? match[1]!.trim() : undefined;
 }
 
 export function authenticate(cfg: GatewayConfig, token: string | undefined): Identity | undefined {
@@ -153,7 +159,7 @@ class CompletionRecorder {
   constructor(
     private readonly promptTokens: number,
     private readonly model: string,
-    private readonly onFinish: (rec: Omit<UsageRecord, 'name'>) => void,
+    private readonly onFinish: (rec: Omit<UsageRecord, 'name' | 'token'>) => void,
   ) {}
 
   feed(chunk: string): void {
@@ -219,11 +225,37 @@ async function streamToClient(
 export function createGateway(cfg: GatewayConfig, usage?: UsageStore): Server {
   const store = usage ?? new UsageStore(cfg.usageFile);
   return createServer(async (req, res) => {
-    const url = (req.url ?? '').split('?')[0];
+    const url = (req.url ?? '').split('?')[0] ?? '';
     try {
       if (url === '/v1/models' && req.method === 'GET') {
         const data = MODEL_CATALOG.map((e) => ({ id: e.id, object: 'model', owned_by: 'daya-gateway', free: e.free }));
         return json(res, 200, { object: 'list', data });
+      }
+
+      // ---- Admin panel ----
+      if (url === '/admin' || url === '/admin/') {
+        const identity = authenticate(cfg, bearerToken(req));
+        return handleAdminDashboard(identity, res);
+      }
+      if (url === '/admin/api/users' && req.method === 'GET') {
+        const identity = authenticate(cfg, bearerToken(req));
+        return handleAdminList(cfg, identity, (t) => store.monthTokens(t), res);
+      }
+      if (url === '/admin/api/users' && (req.method === 'POST' || req.method === 'PUT')) {
+        const identity = authenticate(cfg, bearerToken(req));
+        const raw = await readBody(req);
+        let body: unknown = {};
+        try {
+          body = JSON.parse(raw);
+        } catch {
+          return json(res, 400, { error: { message: 'Invalid JSON body', type: 'invalid_request' } });
+        }
+        return handleAdminUpsert(cfg, identity, body, res);
+      }
+      if (url.startsWith('/admin/api/users/') && req.method === 'DELETE') {
+        const identity = authenticate(cfg, bearerToken(req));
+        const name = decodeURIComponent(url.slice('/admin/api/users/'.length));
+        return handleAdminDelete(cfg, identity, name, res);
       }
 
       if (url !== '/v1/chat/completions' || req.method !== 'POST') {

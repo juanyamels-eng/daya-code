@@ -55,7 +55,7 @@ const cli = meow(
   },
 );
 
-const VALID_PROVIDERS: ProviderName[] = ['mock', 'anthropic', 'openai', 'openrouter', 'daya', 'openai-compatible', ...PRESET_NAMES];
+const VALID_PROVIDERS: ProviderName[] = ['mock', 'anthropic', 'openai', 'openrouter', 'daya', 'openai-compatible', ...(PRESET_NAMES as ProviderName[])];
 
 async function main(): Promise<void> {
   const cfg = envOverrides(await loadConfig());
