@@ -57,5 +57,5 @@ export async function webSearch(input: unknown, ctx: ToolContext): Promise<ToolR
 }
 
 function ctxDayaClient(ctx: ToolContext): DayaClient | null {
-  return (ctx as unknown as { dayaClient?: DayaClient }).dayaClient ?? null;
+  return ctx.dayaClient ?? null;
 }

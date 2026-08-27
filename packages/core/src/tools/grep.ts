@@ -1,5 +1,5 @@
 import { resolve, isAbsolute } from 'node:path';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import type { ToolContext, ToolResult } from '../types.js';
 import { GrepInputSchema, ok, err } from './index.js';
 
@@ -16,10 +16,12 @@ export async function grepContent(input: unknown, ctx: ToolContext): Promise<Too
     return err(`Invalid regex: ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  const includeRe = include ? globToRegex(include) : null;
+
   const matches: string[] = [];
   try {
     await walk(cwd, async (file) => {
-      if (include && !matchGlob(file, include)) return;
+      if (includeRe && !includeRe.test(file)) return;
       if (matches.length >= maxResults) return;
       const content = await readFile(file, 'utf8').catch(() => null);
       if (content === null) return;
@@ -52,9 +54,29 @@ async function walk(dir: string, onFile: (file: string) => Promise<void>): Promi
   }
 }
 
-function matchGlob(file: string, glob: string): boolean {
-  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
-  return new RegExp(`^${escaped}$`).test(file.split(/[\\/]/).pop() ?? '');
+function globToRegex(glob: string): RegExp {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i]!;
+    if (ch === '*') {
+      re += '.*';
+    } else if (ch === '?') {
+      re += '.';
+    } else if (ch === '.') {
+      re += '\\.';
+    } else if (ch === '{') {
+      re += '(?:';
+    } else if (ch === '}') {
+      re += ')';
+    } else if (ch === ',' && glob[i - 1] === '{') {
+      continue;
+    } else if (ch === ',') {
+      re += '|';
+    } else if ('+^${}()|[]\\'.includes(ch)) {
+      re += '\\' + ch;
+    } else {
+      re += ch;
+    }
+  }
+  return new RegExp(re);
 }
-
-void stat;

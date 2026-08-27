@@ -76,8 +76,8 @@ export async function memoryStore(input: unknown, ctx: ToolContext): Promise<Too
 }
 
 function ctxMemory(ctx: ToolContext): LocalMemory | null {
-  return (ctx as unknown as { memory?: LocalMemory }).memory ?? null;
+  return ctx.memory ?? null;
 }
 function ctxDayaClient(ctx: ToolContext): DayaClient | null {
-  return (ctx as unknown as { dayaClient?: DayaClient }).dayaClient ?? null;
+  return ctx.dayaClient ?? null;
 }

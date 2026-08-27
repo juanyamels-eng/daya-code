@@ -7,6 +7,7 @@ import {
   defaultTools,
   AllowAllChecker,
   createProvider,
+  SessionStore,
   type AgentEvent,
   type Message,
   type Provider,
@@ -20,6 +21,7 @@ export interface AppProps {
   apiKey?: string;
   baseUrl?: string;
   cwd: string;
+  sessionsDir?: string;
 }
 
 interface LogEntry {
@@ -38,11 +40,11 @@ export function App(props: AppProps): React.ReactElement {
   const [logs, setLogs] = useState<LogEntry[]>([
     {
       kind: 'system',
-      text: `DAYA Code v0.1.0 — provider=${props.provider} model=${props.model} cwd=${props.cwd}`,
+      text: `DAYA Code v0.2.0 — provider=${props.provider} model=${props.model} cwd=${props.cwd}`,
     },
     {
       kind: 'system',
-      text: 'Type a message and press Enter. /quit to exit, /clear to reset, /model <name> to switch.',
+      text: 'Type a message and press Enter. /quit /clear /model /sessions for help.',
     },
   ]);
   const [busy, setBusy] = useState(false);
@@ -51,33 +53,82 @@ export function App(props: AppProps): React.ReactElement {
   propsRef.current = props;
   const messagesRef = useRef<Message[]>([]);
   const abortRef = useRef<AbortController>();
+  const sessionRef = useRef<string | null>(null);
+  const storeRef = useRef<SessionStore | null>(null);
 
   useEffect(() => {
+    const store = props.sessionsDir ? new SessionStore(props.sessionsDir) : null;
+    storeRef.current = store;
+
     agentRef.current = new Agent({
       provider: makeProvider(props),
       tools: defaultTools(),
       permissions: new AllowAllChecker(),
       cwd: props.cwd,
     });
-  }, [props.provider, props.model, props.apiKey, props.baseUrl, props.cwd]);
+
+    // Auto-create session
+    if (store) {
+      store.init().then(async () => {
+        const session = await store.create(props.cwd);
+        sessionRef.current = session.meta.id;
+      });
+    }
+  }, [props.provider, props.model, props.apiKey, props.baseUrl, props.cwd, props.sessionsDir]);
 
   useInput((input, key) => {
     if (key.ctrl && input === 'c') exit();
   });
 
+  const saveSession = async (): Promise<void> => {
+    const store = storeRef.current;
+    const sessionId = sessionRef.current;
+    if (!store || !sessionId) return;
+    try {
+      const existing = await store.get(sessionId);
+      if (existing) {
+        existing.messages = messagesRef.current;
+        await store.save(existing);
+      }
+    } catch {
+      // silent
+    }
+  };
+
   const onSubmit = async (text: string): Promise<void> => {
     const trimmed = text.trim();
     setInput('');
     if (!trimmed) return;
+
     if (trimmed === '/quit') {
+      await saveSession();
       exit();
       return;
     }
+
     if (trimmed === '/clear') {
       setLogs([{ kind: 'system', text: 'Session cleared.' }]);
       messagesRef.current = [];
+      await saveSession();
       return;
     }
+
+    if (trimmed === '/sessions') {
+      const store = storeRef.current;
+      if (!store) {
+        setLogs((prev) => [...prev, { kind: 'system', text: 'Session persistence not configured.' }]);
+        return;
+      }
+      const list = await store.list();
+      if (list.length === 0) {
+        setLogs((prev) => [...prev, { kind: 'system', text: 'No saved sessions.' }]);
+      } else {
+        const lines = list.map((s) => `  ${s.id} — ${new Date(s.updatedAt).toLocaleString()} — ${s.title ?? '(untitled)'}`);
+        setLogs((prev) => [...prev, { kind: 'system', text: `Saved sessions:\n${lines.join('\n')}` }]);
+      }
+      return;
+    }
+
     if (trimmed.startsWith('/model ')) {
       const next = trimmed.slice('/model '.length).trim();
       if (!next) {
@@ -116,7 +167,7 @@ export function App(props: AppProps): React.ReactElement {
               const { name, input } = ev.data as { name: string; input: unknown };
               setLogs((prev) => [
                 ...prev,
-                { kind: 'tool', text: `▶ ${name}`, meta: JSON.stringify(input) },
+                { kind: 'tool', text: `\u25b6 ${name}`, meta: JSON.stringify(input) },
               ]);
               break;
             }
@@ -126,9 +177,17 @@ export function App(props: AppProps): React.ReactElement {
                 ...prev,
                 {
                   kind: 'tool',
-                  text: result.isError ? `✖ ${name} error` : `✓ ${name}`,
+                  text: result.isError ? `\u2716 ${name} error` : `\u2713 ${name}`,
                   meta: result.output,
                 },
+              ]);
+              break;
+            }
+            case 'compacted': {
+              const { removed, kept } = ev.data as { removed: number; kept: number };
+              setLogs((prev) => [
+                ...prev,
+                { kind: 'system', text: `Context compacted: summarized ${removed} messages, kept ${kept} recent.` },
               ]);
               break;
             }
@@ -149,6 +208,7 @@ export function App(props: AppProps): React.ReactElement {
       setLogs((prev) => [...prev, { kind: 'system', text: `error: ${e instanceof Error ? e.message : String(e)}` }]);
     } finally {
       setBusy(false);
+      await saveSession();
     }
   };
 
@@ -161,7 +221,7 @@ export function App(props: AppProps): React.ReactElement {
             <Text wrap="wrap">{entry.text}</Text>
             {entry.meta && (
               <Text color="gray" wrap="wrap">
-                {'  '}↳ {entry.meta}
+                {'  '}\u2514 {entry.meta}
               </Text>
             )}
           </Box>
@@ -175,7 +235,7 @@ export function App(props: AppProps): React.ReactElement {
         )}
       </Box>
       <Box>
-        <Text color="green">daya ❯ </Text>
+        <Text color="green">daya \u276f </Text>
         <TextInput
           value={input}
           onChange={setInput}
@@ -190,13 +250,13 @@ export function App(props: AppProps): React.ReactElement {
 function prefixFor(kind: LogEntry['kind']): string {
   switch (kind) {
     case 'user':
-      return '▸ you';
+      return '\u25b8 you';
     case 'assistant':
-      return '◆ daya';
+      return '\u25c6 daya';
     case 'tool':
-      return '⚙ tool';
+      return '\u2699 tool';
     case 'system':
-      return '· sys';
+      return '\u00b7 sys';
   }
 }
 

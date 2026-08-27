@@ -104,6 +104,5 @@ function pickExt(img: GeneratedImage): string {
 }
 
 function ctxDayaClient(ctx: ToolContext): DayaClient | null {
-  const c = (ctx as unknown as { dayaClient?: DayaClient }).dayaClient;
-  return c ?? null;
+  return ctx.dayaClient ?? null;
 }

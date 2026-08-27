@@ -42,8 +42,5 @@ export interface DayaContextExtras {
 }
 
 export function attachDayaExtras(ctx: ToolContext, extras: DayaContextExtras): ToolContext {
-  const merged = ctx as ToolContext & DayaContextExtras;
-  if (extras.memory) merged.memory = extras.memory;
-  if (extras.dayaClient) merged.dayaClient = extras.dayaClient;
-  return merged;
+  return { ...ctx, ...extras };
 }

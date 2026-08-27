@@ -2,31 +2,39 @@ import { existsSync } from 'node:fs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { z } from 'zod';
 
-export interface DayaConfig {
-  version: 1;
-  provider: {
-    name: 'mock' | 'anthropic' | 'openai' | 'openrouter' | 'daya';
-    model: string;
-    apiKey?: string;
-    baseUrl?: string;
-  };
-  permissions: {
-    bash: 'allow' | 'deny' | 'prompt';
-    write: 'allow' | 'deny' | 'prompt';
-    edit: 'allow' | 'deny' | 'prompt';
-  };
-  sessions: {
-    dir: string;
-  };
-  mcpServers: Record<string, McpServerConfig>;
-}
+const ProviderNameSchema = z.enum(['mock', 'anthropic', 'openai', 'openrouter', 'daya']);
 
-export interface McpServerConfig {
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-}
+const ProviderConfigSchema = z.object({
+  name: ProviderNameSchema,
+  model: z.string(),
+  apiKey: z.string().optional(),
+  baseUrl: z.string().optional(),
+});
+
+const PermissionsConfigSchema = z.object({
+  bash: z.enum(['allow', 'deny', 'prompt']),
+  write: z.enum(['allow', 'deny', 'prompt']),
+  edit: z.enum(['allow', 'deny', 'prompt']),
+});
+
+const McpServerConfigSchema = z.object({
+  command: z.string(),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string()).optional(),
+});
+
+const DayaConfigSchema = z.object({
+  version: z.literal(1),
+  provider: ProviderConfigSchema,
+  permissions: PermissionsConfigSchema,
+  sessions: z.object({ dir: z.string() }),
+  mcpServers: z.record(McpServerConfigSchema),
+});
+
+export type DayaConfig = z.infer<typeof DayaConfigSchema>;
+export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
 
 const DEFAULT_CONFIG: DayaConfig = {
   version: 1,
@@ -42,16 +50,25 @@ export function defaultConfigPath(): string {
 
 export async function loadConfig(path: string = defaultConfigPath()): Promise<DayaConfig> {
   if (!existsSync(path)) return { ...DEFAULT_CONFIG };
-  const raw = await readFile(path, 'utf8');
-  const parsed = JSON.parse(raw) as Partial<DayaConfig>;
-  return {
-    ...DEFAULT_CONFIG,
-    ...parsed,
-    provider: { ...DEFAULT_CONFIG.provider, ...(parsed.provider ?? {}) },
-    permissions: { ...DEFAULT_CONFIG.permissions, ...(parsed.permissions ?? {}) },
-    sessions: { ...DEFAULT_CONFIG.sessions, ...(parsed.sessions ?? {}) },
-    mcpServers: parsed.mcpServers ?? {},
-  };
+  try {
+    const raw = await readFile(path, 'utf8');
+    const parsed = JSON.parse(raw);
+    const result = DayaConfigSchema.safeParse(parsed);
+    if (result.success) {
+      return result.data;
+    }
+    // If validation fails, merge with defaults
+    return {
+      ...DEFAULT_CONFIG,
+      ...(parsed as Partial<DayaConfig>),
+      provider: { ...DEFAULT_CONFIG.provider, ...((parsed as Partial<DayaConfig>).provider ?? {}) },
+      permissions: { ...DEFAULT_CONFIG.permissions, ...((parsed as Partial<DayaConfig>).permissions ?? {}) },
+      sessions: { ...DEFAULT_CONFIG.sessions, ...((parsed as Partial<DayaConfig>).sessions ?? {}) },
+      mcpServers: (parsed as Partial<DayaConfig>).mcpServers ?? {},
+    };
+  } catch {
+    return { ...DEFAULT_CONFIG };
+  }
 }
 
 export async function saveConfig(cfg: DayaConfig, path: string = defaultConfigPath()): Promise<void> {
@@ -68,7 +85,7 @@ export function envOverrides(cfg: DayaConfig): DayaConfig {
     provider: {
       ...cfg.provider,
       ...(apiKey ? { apiKey } : {}),
-      ...(providerName ? { name: providerName } : {}),
+      ...(providerName && ProviderNameSchema.safeParse(providerName).success ? { name: providerName } : {}),
       ...(model ? { model } : {}),
     },
   };

@@ -69,6 +69,7 @@ async function main(): Promise<void> {
       apiKey,
       baseUrl,
       cwd,
+      sessionsDir: cfg.sessions.dir,
     }),
   );
 }

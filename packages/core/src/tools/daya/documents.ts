@@ -58,5 +58,5 @@ export async function documentsQuery(input: unknown, ctx: ToolContext): Promise<
 }
 
 function ctxDayaClient(ctx: ToolContext): DayaClient | null {
-  return (ctx as unknown as { dayaClient?: DayaClient }).dayaClient ?? null;
+  return ctx.dayaClient ?? null;
 }

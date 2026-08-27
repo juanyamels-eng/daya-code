@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import type { DayaClient } from './daya/client.js';
+import type { LocalMemory } from './dayamemory/local.js';
 
 export const RoleSchema = z.enum(['system', 'user', 'assistant', 'tool']);
 export type Role = z.infer<typeof RoleSchema>;
@@ -53,6 +55,8 @@ export interface ToolContext {
   signal: AbortSignal;
   permissions: PermissionChecker;
   emit?: (event: ToolEvent) => void;
+  dayaClient?: DayaClient | null;
+  memory?: LocalMemory | null;
 }
 
 export type ToolEvent =
