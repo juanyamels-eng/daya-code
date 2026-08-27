@@ -1,0 +1,30 @@
+{
+  "name": "daya-code-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Monorepo for DAYA Code — terminal code agent connected to the DAYA suite",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/juanyamels-eng/daya-code"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build:core": "npm --prefix packages/core run build",
+    "build:cli": "npm --prefix packages/cli run build",
+    "build:mcp": "npm --prefix packages/mcp-server run build",
+    "build": "npm run build:core && npm run build:cli && npm run build:mcp",
+    "test": "npm --prefix packages/core test",
+    "test:mcp": "npm --prefix packages/mcp-server test",
+    "lint": "npm --prefix packages/core run lint && npm --prefix packages/cli run lint && npm --prefix packages/mcp-server run lint",
+    "start": "npm --prefix packages/cli start",
+    "dev": "npm --prefix packages/cli run dev"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "prettier": "^3.2.0"
+  }
+}

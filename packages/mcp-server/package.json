@@ -1,0 +1,45 @@
+{
+  "name": "@daya-code/mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server exposing DAYA Code tools for any MCP-compatible client",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "daya-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/juanyamels-eng/daya-code",
+    "directory": "packages/mcp-server"
+  },
+  "keywords": [
+    "mcp",
+    "ai",
+    "daya",
+    "model-context-protocol",
+    "code-agent"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@daya-code/core": "^0.1.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0",
+    "@types/node": "^22.10.0"
+  }
+}
