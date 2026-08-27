@@ -34,27 +34,6 @@ Done. Created 3 files in 12s.
 
 ---
 
-## Why DAYA Code?
-
-Most terminal agents stop at reading and writing files. DAYA Code goes further.
-
-| Feature | Claude Code | OpenCode | **DAYA Code** |
-|---------|:-----------:|:--------:|:-------------:|
-| Read / write / edit files | ✅ | ✅ | ✅ |
-| Bash execution | ✅ | ✅ | ✅ |
-| Real-time streaming | ✅ | ✅ | ✅ |
-| Multiple providers | ❌ | ✅ | ✅ |
-| AI image generation | ❌ | ❌ | ✅ |
-| Web search | ❌ | ❌ | ✅ |
-| Document querying | ❌ | ❌ | ✅ |
-| Persistent memory | ❌ | ❌ | ✅ |
-| MCP server | ❌ | ❌ | ✅ |
-| Open source | ❌ | ✅ | ✅ |
-
-**In short:** other agents edit code. DAYA Code edits code **and** connects to a full AI suite — images, search, docs, memory — all native, no plugins needed.
-
----
-
 ## Quickstart
 
 ### 1. Install
@@ -72,23 +51,6 @@ daya
 # One-shot mode
 daya --auto "list all TypeScript files in this project"
 ```
-
-### 3. Connect a provider (optional)
-
-```bash
-# Anthropic
-export ANTHROPIC_API_KEY=sk-ant-...
-
-# OpenAI
-export OPENAI_API_KEY=sk-...
-
-# DAYA (full suite: images, search, docs, memory)
-export DAYA_API_KEY=daya-...
-
-daya --provider anthropic --auto "refactor src/index.ts"
-```
-
-> No API key? No problem. DAYA Code runs with a **mock provider** by default — perfect for exploring.
 
 ---
 
