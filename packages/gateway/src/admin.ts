@@ -90,7 +90,8 @@ export function handleAdminDashboard(identity: Identity | undefined, res: Server
   res.end(dashboardHtml);
 }
 
-const DASH_STYLE = `:root{color-scheme:dark}*{box-sizing:border-box}body{font-family:system-ui,Segoe UI,Roboto,sans-serif;background:#0f1117;color:#e6e6e6;margin:0;padding:24px;max-width:860px;margin:0 auto}input,button{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid #2a2f3d;background:#171a22;color:#e6e6e6}button{cursor:pointer;background:#2b6cff;border-color:#2b6cff;font-weight:600}button.ghost{background:transparent}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid #22262f}th{color:#9aa4b5;font-size:12px;text-transform:uppercase}.muted{color:#9aa4b5}.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:12px}.ok{background:#1a3d2b;color:#5ee08b}.off{background:#3a2330;color:#ff8aa0}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}input.flex{flex:1;min-width:160px}`;
+const DASH_STYLE = `:root{color-scheme:dark}*{box-sizing:border-box}body{font-family:system-ui,Segoe UI,Roboto,sans-serif;background:#0f1117;color:#e6e6e6;margin:0;padding:24px;max-width:860px;margin:0 auto}input,button{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid #2a2f3d;background:#171a22;color:#e6e6e6}button{cursor:pointer;background:#2b6cff;border-color:#2b6cff;font-weight:600}button.ghost{background:transparent}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid #22262f}th{color:#9aa4b5;font-size:12px;text-transform:uppercase}.muted{color:#9aa4b5}.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:12px}    .ok{background:#1a3d2b;color:#5ee08b}.off{background:#3a2330;color:#ff8aa0}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}input.flex{flex:1;min-width:160px}.topup{padding:10px 0;border-bottom:1px solid #22262f;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+`;
 
 const dashboardHtml = `<!doctype html>
 <html lang="en">
@@ -116,6 +117,11 @@ const dashboardHtml = `<!doctype html>
     <thead><tr><th>Name</th><th>Enabled</th><th>Token</th><th>Quota</th><th>Used</th><th></th></tr></thead>
     <tbody id="rows"></tbody>
   </table>
+  <div class="card" style="margin-top:20px">
+    <h2 style="font-size:16px;margin:0 0 8px">Pending top-ups</h2>
+    <div id="topups"></div>
+    <p class="muted" style="font-size:12px;margin-top:8px">User pays (cripto/transfer), then approve the code to credit their quota. ~250k tokens &dollar;1.</p>
+  </div>
   <script>
     const rows = document.getElementById('rows');
     async function json(method, url, body) {
@@ -123,6 +129,23 @@ const dashboardHtml = `<!doctype html>
       if (!r.ok) throw new Error((await r.text()) || r.status);
       return r.json();
     }
+    async function loadTopups() {
+      const d = await (await fetch('/admin/api/topups')).json();
+      const pending = (d.topups||[]).filter(t=>t.status==='pending');
+      const el = document.getElementById('topups');
+      if(!pending.length){ el.innerHTML='<span class="muted">No pending top-ups.</span>'; return; }
+      el.innerHTML = pending.map(t=>'<div class="topup">'+
+        '<code>'+t.code+'</code>'+
+        '<span>'+t.user+'</span>'+
+        '<span class="muted">$'+t.amountUsd+' &rarr; '+t.amountTokens.toLocaleString()+' tok</span>'+
+        '<button class="ghost" data-approve="'+t.code+'">approve</button>'+
+        '<button class="ghost" data-cancel="'+t.code+'">cancel</button>'+
+      '</div>').join('');
+      for(const b of document.querySelectorAll('[data-approve]')) b.onclick=()=>approve(b.dataset.approve);
+      for(const b of document.querySelectorAll('[data-cancel]')) b.onclick=()=>cancel(b.dataset.cancel);
+    }
+    async function approve(code){ await json('POST','/admin/api/topups/'+code+'/approve'); load(); loadTopups(); }
+    async function cancel(code){ await json('POST','/admin/api/topups/'+code+'/cancel'); loadTopups(); }
     async function load() {
       const d = await (await fetch('/admin/api/users')).json();
       document.getElementById('rows').innerHTML = d.users.map(u => \`<tr>
@@ -163,8 +186,9 @@ const dashboardHtml = `<!doctype html>
       document.getElementById('name').value = ''; document.getElementById('token').value = ''; document.getElementById('quota').value = '';
       load();
     };
-    document.getElementById('reload').onclick = load;
+    document.getElementById('reload').onclick = () => { load(); loadTopups(); };
     load();
+    loadTopups();
   </script>
 </body>
 </html>`;

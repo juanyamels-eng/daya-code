@@ -21,6 +21,12 @@ import {
   handlePortalMe,
   buildPortalStats,
 } from './portal.js';
+import {
+  handleCreateTopup,
+  handleListTopups,
+  handleApproveTopup,
+  handleCancelTopup,
+} from './billing.js';
 
 const MAX_BODY = 10 * 1024 * 1024;
 
@@ -275,6 +281,35 @@ export function createGateway(cfg: GatewayConfig, usage?: UsageStore): Server {
           const id: Identity = { token, name: user?.name ?? 'user', admin: false, quota: user?.quota };
           return buildPortalStats(id, s.monthTokens, s.monthCostUsd, s.requests);
         }, res);
+      }
+      if (url === '/portal/api/topup' && req.method === 'POST') {
+        const identity = authenticate(cfg, bearerToken(req));
+        const raw = await readBody(req);
+        let body: unknown = {};
+        try {
+          body = JSON.parse(raw);
+        } catch {
+          return json(res, 400, { error: { message: 'Invalid JSON body', type: 'invalid_request' } });
+        }
+        return handleCreateTopup(cfg, identity, body, res);
+      }
+
+      // ---- Admin: top-ups / billing ----
+      if (url === '/admin/api/topups' && req.method === 'GET') {
+        const identity = authenticate(cfg, bearerToken(req));
+        return handleListTopups(cfg, identity, res);
+      }
+      if (url.startsWith('/admin/api/topups/') && req.method === 'POST') {
+        const identity = authenticate(cfg, bearerToken(req));
+        const rest = url.slice('/admin/api/topups/'.length);
+        if (rest.endsWith('/approve')) {
+          const code = decodeURIComponent(rest.slice(0, -'/approve'.length));
+          return handleApproveTopup(cfg, identity, code, res);
+        }
+        if (rest.endsWith('/cancel')) {
+          const code = decodeURIComponent(rest.slice(0, -'/cancel'.length));
+          return handleCancelTopup(cfg, identity, code, res);
+        }
       }
 
       if (url !== '/v1/chat/completions' || req.method !== 'POST') {

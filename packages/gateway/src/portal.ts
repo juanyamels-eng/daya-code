@@ -86,6 +86,16 @@ export function handlePortal(host: string | undefined, res: ServerResponse): voi
     </div>
 
     <div class="card">
+      <div class="muted">Buy more tokens (manual/cripto)</div>
+      <div class="row" style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
+        <label class="muted" style="margin:0">USD $</label>
+        <input id="t-usd" type="number" min="5" max="500" value="10" style="width:100px" />
+        <button id="t-go" style="margin:0">Generate top-up</button>
+      </div>
+      <div id="t-res" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card">
       <div class="muted">Free models available on this gateway</div>
       <div style="margin-top:12px" id="s-models"></div>
     </div>
@@ -122,6 +132,16 @@ export function handlePortal(host: string | undefined, res: ServerResponse): voi
       }
       $('s-models').innerHTML=(d.freeModels||[]).map(m=>'<span class="tag">'+m+'</span>').join('')||'<span class="muted">none</span>';
     }
+    $('t-go').onclick=async()=>{
+      const usd=Number(document.getElementById('t-usd').value);
+      if(!usd||usd<5){alert('Minimum $5');return;}
+      const r=await fetch('/portal/api/topup',{method:'POST',headers:{authorization:'Bearer '+localStorage.getItem(KEY),'content-type':'application/json'},body:JSON.stringify({usd})});
+      const d=await r.json();
+      if(!r.ok){document.getElementById('t-res').innerHTML='<span class="muted" style="color:#ff8aa0">'+ (d.error||'error') +'</span>';return;}
+      document.getElementById('t-res').innerHTML='<p>Send <b>$'+usd+'</b> and give this code to your admin:</p>'+
+        '<pre style="user-select:all">'+d.topup.code+'</pre>'+
+        '<p class="muted">Credits '+d.tokens.toLocaleString()+' tokens at '+d.rate+'.</p>';
+    };
     $('go').onclick=()=>{token=$('key').value.trim()||localStorage.getItem(KEY)||'';if(!token){alert('Paste your API key');return;}localStorage.setItem(KEY,token);load(token);};
     if(token)load(token);
   </script>

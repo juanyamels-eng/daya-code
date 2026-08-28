@@ -16,6 +16,16 @@ export interface GatewayUser {
   quota?: number;
 }
 
+export interface Topup {
+  code: string;
+  user: string;
+  amountUsd: number;
+  amountTokens: number;
+  status: 'pending' | 'paid' | 'cancelled';
+  ts: number;
+  paidAt?: number;
+}
+
 export interface GatewayConfig {
   port: number;
   adminKey?: string;
@@ -56,12 +66,13 @@ export function defaultUpstreamHeaders(name: string): Record<string, string> | u
   return undefined;
 }
 
-interface RawConfig {
+export interface RawConfig {
   port?: number;
   adminKey?: string;
   usageFile?: string;
   upstreams?: Record<string, Partial<Upstream>>;
   users?: Partial<GatewayUser>[];
+  topups?: Topup[];
 }
 
 export function configCandidates(): string[] {
