@@ -4,7 +4,7 @@ import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import {
   Agent,
   defaultTools,
@@ -26,7 +26,7 @@ import {
   type PermissionAction,
   type PermissionDecision,
 } from '@daya-code/core';
-import { getTheme, THEME_NAMES, DEFAULT_THEME, type DayaTheme } from './themes.js';
+import { getTheme, DAYA_BRAND, DAYA_BRAND_SOFT, THEME_NAMES, DEFAULT_THEME, type DayaTheme } from './themes.js';
 import { glyphs, type GlyphSet } from './glyphs.js';
 import type { EditReviewChange } from '@daya-code/core';
 
@@ -113,6 +113,9 @@ export function App(props: AppProps): React.ReactElement {
   const [mode, setMode] = useState<AgentMode>('build');
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [busy, setBusy] = useState(false);
+  const [runningTool, setRunningTool] = useState<string | null>(null);
+  const [lastRun, setLastRun] = useState<{ mode: string; dur: string; cost: string } | null>(null);
+  const [initError, setInitError] = useState<string | null>(null);
   const [permissionPrompt, setPermissionPrompt] = useState<PermissionPrompt | null>(null);
   const [permissionInput, setPermissionInput] = useState('');
   const [reviewPrompt, setReviewPrompt] = useState<ReviewPrompt | null>(null);
@@ -200,27 +203,25 @@ export function App(props: AppProps): React.ReactElement {
     customPromptsRef.current = loadCustomPrompts(props.cwd);
 
     (async () => {
-      agentRef.current = buildAgent(props);
-      agentRef.current.startWatcher((changes) => {
-        for (const change of changes) {
-          setLogs((prev) => [...prev, { kind: 'system', text: `${change.type} ${change.path} (external)` }]);
+      try {
+        agentRef.current = buildAgent(props);
+        agentRef.current.startWatcher((changes) => {
+          for (const change of changes) {
+            setLogs((prev) => [...prev, { kind: 'system', text: `${change.type} ${change.path} (external)` }]);
+          }
+        });
+
+        if (store) {
+          await store.init();
+          const session = await store.create(props.cwd);
+          sessionRef.current = session.meta.id;
         }
-      });
 
-      if (store) {
-        await store.init();
-        const session = await store.create(props.cwd);
-        sessionRef.current = session.meta.id;
+        // No seeded lines: the empty state renders a branded welcome instead.
+        setLogs([]);
+      } catch (e) {
+        setInitError(e instanceof Error ? e.message : String(e));
       }
-
-      const initial: LogEntry[] = [
-        { kind: 'system', text: `${props.cwd}` },
-        {
-          kind: 'system',
-          text: `/help for commands ${g.bullet} Tab plan↔build ${g.bullet} ↑/↓ scroll ${g.bullet} @file attaches`,
-        },
-      ];
-      setLogs(initial);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -239,6 +240,7 @@ export function App(props: AppProps): React.ReactElement {
     }
     if (key.ctrl && input === 'l') {
       setLogs([]);
+      setLastRun(null);
       return;
     }
     if (logs.length > 0 && key.upArrow) {
@@ -732,6 +734,8 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
   const runAgent = async (prompt: string, displayText: string): Promise<void> => {
     runStartRef.current = Date.now();
     setScrollTop(0);
+    setLastRun(null);
+    setRunningTool(null);
     setLogs((prev) => [...prev, { kind: 'user', text: displayText }]);
     setBusy(true);
     busyRef.current = true;
@@ -757,6 +761,7 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
             case 'tool_started': {
               const { name } = ev.data as { name: string; input: unknown };
               toolTimingsRef.current[name] = { name, startedAt: Date.now() };
+              setRunningTool(name);
               break;
             }
             case 'tool_finished': {
@@ -765,6 +770,7 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
               const timing = toolTimingsRef.current[name];
               const elapsed = timing ? `${((Date.now() - timing.startedAt) / 1000).toFixed(1)}s` : '';
               delete toolTimingsRef.current[name];
+              setRunningTool((cur) => (cur === name ? null : cur));
               const icon = result.isError ? g.cross : toolGlyph(name, g.safe);
               setLogs((prev) => [
                 ...prev,
@@ -806,10 +812,10 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
               messagesRef.current = (ev.data as { messages: Message[] }).messages;
               setLogs((prev) => finalizeStreaming(prev));
               const doneDur = ((Date.now() - runStartRef.current) / 1000).toFixed(1);
-              setLogs((prev) => [...prev, { kind: 'meta', text: `${g.box} ${modeRef.current} ${g.bullet} ${props.model} · ${doneDur}s` }]);
-              if (tokenStatsRef.current.toolsRun > 0) {
-                setLogs((prev) => [...prev, { kind: 'system', text: `summary ${g.dash} ${buildSessionSummary()}`, meta: 'run complete · /summary to re-view' }]);
-              }
+              const doneCost = formatCost(
+                estimateCost(props.model, tokenStatsRef.current.inputTokens, tokenStatsRef.current.outputTokens),
+              );
+              setLastRun({ mode: modeRef.current, dur: doneDur, cost: doneCost });
               break;
             }
             case 'error': {
@@ -878,6 +884,7 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
   const contextPct = maxTokens > 0 ? Math.min(100, Math.round((usedTokens / maxTokens) * 100)) : 0;
   const ctxFillN = Math.round((contextPct / 100) * 10);
   const ctxColor = contextPct >= 90 ? theme.accents.error : contextPct >= 70 ? theme.accents.warning : theme.accents.info;
+  const projName = basename(props.cwd);
 
   const panelHeight = Math.max(6, rows - 8);
   const logBudget = Math.max(4, panelHeight - 3);
@@ -886,32 +893,71 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
   const visibleLogs = logs.slice(Math.max(0, logs.length - logBudget - st));
   const hidden = logs.length - visibleLogs.length;
   const elapsed = busy ? fmtElapsed(now - runStartRef.current) : fmtElapsed(Date.now() - perfStartRef.current);
+  const statLeft = busy
+    ? `${g.buildDot} running ${g.bullet} ${elapsed}`
+    : `${mode === 'plan' ? g.planDot : g.buildDot} ${mode}`;
+  const statExtra = busy ? 'ctrl+c to cancel' : `tab plan/build ${g.bullet} /help`;
+  const ctxBar =
+    maxTokens > 0 ? `${g.blockFull.repeat(ctxFillN)}${g.blockEmpty.repeat(10 - ctxFillN)} ${contextPct}%  ${g.bullet}  ` : '';
+  const statRight = `${stats.toolsRun} tool${stats.toolsRun === 1 ? '' : 's'}  ${g.bullet}  ${(usedTokens / 1000).toFixed(1)}k  ${g.bullet}  ${formatCost(estimateCost(props.model, stats.inputTokens, stats.outputTokens))}`;
+  const statusPad = Math.max(2, columns - statLeft.length - statExtra.length - ctxBar.length - statRight.length - 8);
 
   return (
     <Box flexDirection="column">
       {/* Header: brand | mode pills centered | provider/model (quiet) */}
-      <Box justifyContent="space-between" width="100%" marginBottom={1}>
-        <Text color={theme.text.muted}>
-          {g.brand} DAYA Code {g.bullet} {DAYA_VERSION}
-        </Text>
+      <Box justifyContent="space-between" width="100%" alignItems="center" marginBottom={1}>
+        <Box alignItems="center">
+          <Text color={DAYA_BRAND} bold>
+            {g.brand} DAYA
+          </Text>
+          <Text color={theme.text.secondary}>{' Code '}</Text>
+          <Text color={theme.text.primary} backgroundColor={DAYA_BRAND_SOFT}>
+            {` ${DAYA_VERSION} `}
+          </Text>
+        </Box>
         <Box flexGrow={1} justifyContent="center">
-          <Text>
-            <Text color={mode === 'build' ? theme.accents.build : theme.text.muted} bold={mode === 'build'}>
-              {g.buildDot} build
-            </Text>
-            <Text color={theme.text.muted}>{'  '}</Text>
-            <Text color={mode === 'plan' ? theme.accents.plan : theme.text.muted} bold={mode === 'plan'}>
-              {g.planDot} plan
-            </Text>
+          <Text
+            color={mode === 'build' ? theme.window.panel : theme.text.muted}
+            backgroundColor={mode === 'build' ? theme.accents.build : undefined}
+            bold={mode === 'build'}
+          >
+            {` ${g.buildDot} build `}
+          </Text>
+          <Text color={theme.text.muted}>{' '}</Text>
+          <Text
+            color={mode === 'plan' ? theme.window.panel : theme.text.muted}
+            backgroundColor={mode === 'plan' ? theme.accents.plan : undefined}
+            bold={mode === 'plan'}
+          >
+            {` ${g.planDot} plan `}
           </Text>
         </Box>
         <Text color={theme.text.muted}>
-          {props.provider} {g.bullet} {props.model}
+          <Text color={theme.accents.info}>{g.right}</Text>
+          {` ${projName} `}
+          <Text color={theme.window.dim}>{g.bullet}</Text>
+          {` ${props.model}`}
         </Text>
       </Box>
 
       {/* Messages */}
       <Box flexDirection="column" height={panelHeight}>
+        {initError && (
+          <Box flexDirection="column" marginBottom={1}>
+            <Text color={theme.accents.error} bold>
+              {`${g.warn} DAYA couldn't start`}
+            </Text>
+            <Text color={theme.text.secondary} wrap="wrap">
+              {initError}
+            </Text>
+            <Text color={theme.text.muted} wrap="wrap">
+              {`/model to switch provider ${g.bullet} /theme to restyle ${g.bullet} DAYA_GLYPHS=ascii for legacy terminals`}
+            </Text>
+          </Box>
+        )}
+        {logs.length === 0 && !busy && !permissionPrompt && !reviewPrompt && (
+          <Welcome theme={theme} g={g} columns={columns} rows={rows} />
+        )}
         {hidden > 0 && (
           <Text color={theme.text.muted}>
             {g.dots} {hidden} older {hidden === 1 ? 'line' : 'lines'} {g.dash} ↑ to scroll down
@@ -923,7 +969,9 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
         {busy && (
           <Box marginTop={1}>
             <Text color={theme.text.muted}>
-              <Spinner type="dots" /> working {g.bullet} {elapsed}
+              <Spinner type="dots" />{' '}
+              <Text color={theme.accents.info}>{runningTool ?? (mode === 'plan' ? 'planning' : 'thinking')}</Text>
+              {` ${g.bullet} ${elapsed}`}
             </Text>
           </Box>
         )}
@@ -954,7 +1002,26 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
             </Text>
           </Box>
         )}
+        {lastRun && !busy && !permissionPrompt && !reviewPrompt && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text color={theme.window.dim}>{g.hairline.repeat(Math.max(8, columns - 4))}</Text>
+            <Text color={theme.text.secondary}>
+              <Text color={theme.accents.success} bold>{`${g.check} done`}</Text>
+              {`  ${g.bullet}  ${lastRun.mode}  ${g.bullet}  ${lastRun.dur}  ${g.bullet}  ${lastRun.cost}`}
+            </Text>
+            <Text color={theme.window.dim}>{g.hairline.repeat(Math.max(8, columns - 4))}</Text>
+          </Box>
+        )}
       </Box>
+
+      {/* Context near-limit warning */}
+      {maxTokens > 0 && contextPct >= 75 && !busy && !permissionPrompt && !reviewPrompt && (
+        <Box marginTop={1}>
+          <Text color={theme.accents.warning}>
+            {`${g.warn} context ${contextPct}% ${g.dash} near the limit, ask DAYA to summarize`}
+          </Text>
+        </Box>
+      )}
 
       {/* Prompt */}
       <Box marginTop={1}>
@@ -967,23 +1034,17 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
         />
       </Box>
 
-      {/* Status line (stats always visible, StatsLine style) */}
-      <Box justifyContent="space-between" width="100%" marginTop={1}>
-        <Text color={theme.text.muted}>
-          <Text color={modeColor}>{busy ? `running ${g.bullet} ${elapsed}` : mode}</Text>
-          {'  '}{g.bullet}{' '}
-          {busy ? 'ctrl+c to cancel' : `tab plan/build ${g.bullet} /help`}
-        </Text>
-        <Text color={theme.text.muted}>
-          {stats.toolsRun} tool{stats.toolsRun === 1 ? '' : 's'} {g.bullet} {(usedTokens / 1000).toFixed(1)}k
-          {maxTokens > 0 && (
-            <>
-              {' '}{g.bullet}{' '}
-              <Text color={ctxColor}>{g.blockFull.repeat(ctxFillN)}{g.blockEmpty.repeat(10 - ctxFillN)}</Text>
-              {` ${contextPct}%`}
-            </>
-          )}
-          {' '}{g.bullet} {formatCost(estimateCost(props.model, stats.inputTokens, stats.outputTokens))}
+      {/* Status bar: full-width strip with mode, ctx meter and stats */}
+      <Box marginTop={1} flexDirection="column">
+        <Text color={theme.window.dim}>{g.hairline.repeat(Math.max(8, columns - 2))}</Text>
+        <Text wrap="truncate" backgroundColor={theme.window.headerBg}>
+          <Text color={modeColor} bold={busy}>{` ${statLeft}`}</Text>
+          <Text color={theme.text.muted}>
+            {`  ${statExtra}`}
+            {' '.repeat(statusPad)}
+          </Text>
+          {maxTokens > 0 && <Text color={ctxColor}>{ctxBar}</Text>}
+          <Text color={theme.text.muted}>{statRight}</Text>
         </Text>
       </Box>
     </Box>
@@ -1053,6 +1114,9 @@ class BridgePermissionChecker implements PermissionChecker {
 export function MessageRow({ entry, theme }: { entry: LogEntry; theme: DayaTheme }): React.ReactElement {
   const g = glyphs();
   const isSpeech = entry.kind === 'user' || entry.kind === 'assistant';
+  const toolErr =
+    entry.kind === 'tool' &&
+    (entry.text.startsWith(g.cross) || /^(fail|err|error)/i.test(entry.text.trimStart()));
 
   const color =
     entry.kind === 'user'
@@ -1093,7 +1157,12 @@ export function MessageRow({ entry, theme }: { entry: LogEntry; theme: DayaTheme
           </Text>
         )}
         {entry.kind === 'assistant' ? (
-          <MarkdownLines text={entry.text} theme={theme} />
+          <Box flexDirection="column">
+            <Text color={DAYA_BRAND} bold>
+              {`${g.brand} DAYA`}
+            </Text>
+            <MarkdownLines text={entry.text} theme={theme} />
+          </Box>
         ) : entry.kind === 'diff' && entry.meta ? null : entry.kind === 'user' ? (
           entry.text.split('\n').map((line, i) => (
             <Text key={i} wrap="wrap" backgroundColor={theme.window.panel} color={theme.text.primary}>
@@ -1101,8 +1170,16 @@ export function MessageRow({ entry, theme }: { entry: LogEntry; theme: DayaTheme
               <Text color={theme.text.primary}>{line || ' '}</Text>
             </Text>
           ))
+        ) : entry.kind === 'tool' ? (
+          <Text color={toolErr ? theme.accents.error : theme.text.secondary} wrap="wrap">
+            {entry.text}
+          </Text>
+        ) : entry.kind === 'section' ? (
+          <Text color={color} bold wrap="wrap">
+            {`${g.hairline}${g.hairline} ${entry.text} ${g.hairline}${g.hairline}`}
+          </Text>
         ) : (
-          <Text color={color} wrap="wrap" bold={entry.kind === 'section'}>
+          <Text color={color} wrap="wrap">
             {entry.text}
           </Text>
         )}
@@ -1116,9 +1193,99 @@ export function MessageRow({ entry, theme }: { entry: LogEntry; theme: DayaTheme
   );
 }
 
+/** Branded empty state shown until the first message is sent. */
+function Welcome({
+  theme,
+  g,
+  columns,
+  rows,
+}: {
+  theme: DayaTheme;
+  g: GlyphSet;
+  columns: number;
+  rows: number;
+}): React.ReactElement | null {
+  if (rows < 26) return null;
+  const brand = DAYA_BRAND;
+  // Block-letter "DAYA" (16 cols). Falls back to plain text on non-unicode terms.
+  const logo = g.safe
+    ? [
+        `${g.blockFull}${g.blockFull}${g.blockFull}   ${g.blockFull}  ${g.blockFull} ${g.blockFull}   ${g.blockFull} `,
+        `${g.blockFull}  ${g.blockFull} ${g.blockFull} ${g.blockFull} ${g.blockFull} ${g.blockFull} ${g.blockFull} `,
+        `${g.blockFull}${g.blockFull}${g.blockFull}  ${g.blockFull}${g.blockFull}${g.blockFull}  ${g.blockFull}  ${g.blockFull}${g.blockFull}${g.blockFull} `,
+        `${g.blockFull}  ${g.blockFull} ${g.blockFull} ${g.blockFull}   ${g.blockFull}  ${g.blockFull} ${g.blockFull} `,
+      ]
+    : [undefined];
+  const hints: Array<[string, string]> = [
+    ['tab', `plan ${g.swap} build`],
+    ['↑/↓', 'scroll'],
+    ['/model', 'switch model'],
+    ['/theme', 'pick palette'],
+    ['@file', 'attach a file'],
+    ['/mem', 'remember a fact'],
+  ];
+  return (
+    <Box flexDirection="column">
+      {logo[0] === undefined ? (
+        <Box justifyContent="center" marginBottom={1}>
+          <Text color={brand} bold>
+            DAYA
+          </Text>
+        </Box>
+      ) : (
+        logo.map((row, i) => (
+          <Box key={i} justifyContent="center">
+            <Text color={brand} bold>
+              {row}
+            </Text>
+          </Box>
+        ))
+      )}
+      <Box justifyContent="center" marginTop={1}>
+        <Text color={theme.text.secondary}>images {g.bullet} web {g.bullet} docs {g.bullet} memory {g.dash} one terminal</Text>
+      </Box>
+      {columns >= 60 && (
+        <Box justifyContent="center" marginTop={2}>
+          <Box flexDirection="column">
+            {Array.from({ length: 3 }, (_, r) => (
+              <Box key={r}>
+                {[0, 1]
+                  .map((ci) => hints[r * 2 + ci])
+                  .filter((h): h is [string, string] => h !== undefined)
+                  .map(([k, v]) => (
+                    <Box key={k} width={26}>
+                      <Text color={brand} bold>{` ${k} `}</Text>
+                      <Text color={theme.text.muted}>{v}</Text>
+                    </Box>
+                  ))}
+              </Box>
+            ))}
+          </Box>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
 export function DiffMeta({ text, theme, forced }: { text: string; theme: DayaTheme; forced?: string }): React.ReactElement {
   const g = glyphs();
   const lines = text.split('\n');
+  // Per-file +N/−M tallies shown on each "diff --git" header line.
+  const counts = new Map<number, { added: number; removed: number }>();
+  if (!forced) {
+    let cur = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i]!.trimStart();
+      if (t.startsWith('diff --git')) {
+        cur = i;
+        counts.set(i, { added: 0, removed: 0 });
+      } else if (cur >= 0) {
+        const c = counts.get(cur)!;
+        if (t.startsWith('+') && !t.startsWith('+++')) c.added++;
+        else if (t.startsWith('-') && !t.startsWith('---')) c.removed++;
+      }
+    }
+  }
   return (
     <Box flexDirection="column">
       {lines.map((line, i) => {
@@ -1131,9 +1298,18 @@ export function DiffMeta({ text, theme, forced }: { text: string; theme: DayaThe
           else if (trimmed.startsWith('@@') || trimmed.startsWith('diff --git') || trimmed.startsWith('---') || trimmed.startsWith('+++')) bg = theme.diffBg.ctx;
         }
         const gutter = i === 0 ? g.gutterCorner : g.gutterBar;
+        const sum = counts.get(i);
         return (
           <Text key={i} color={color} backgroundColor={bg} wrap="wrap" bold={bold}>
             {gutter} {line}
+            {sum && (
+              <>
+                {'  '}
+                <Text color={theme.accents.success} bold>{`+${sum.added}`}</Text>
+                {' '}
+                <Text color={theme.accents.error} bold>{`-${sum.removed}`}</Text>
+              </>
+            )}
           </Text>
         );
       })}

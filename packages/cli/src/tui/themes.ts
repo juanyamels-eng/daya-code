@@ -34,7 +34,54 @@
   };
 }
 
+/**
+ * DAYA brand accent — intentionally fixed across every theme so the product
+ * keeps a recognizable mark no matter which palette is active. Picked to stay
+ * legible on all the dark panels (from #16161e to #2e3440) while reading
+ * distinctly from the role colors (blue user, mauve assistant, yellow tool).
+ */
+export const DAYA_BRAND = '#8a6cff';
+
+/** Dark brand-tinted fill used for small pills (e.g. the version tag) — reads
+ * as the brand on every dark panel without stealing attention. */
+export const DAYA_BRAND_SOFT = '#241d3d';
+
 export const themes: Record<string, DayaTheme> = {
+  daya: {
+    name: 'Daya',
+    window: {
+      border: '#4a3b8f',
+      panel: '#0d0b18',
+      headerBg: '#14111f',
+      dim: '#6f6891',
+    },
+    text: {
+      primary: '#e7e4ff',
+      secondary: '#b4aee0',
+      muted: '#6f6891',
+    },
+    roles: {
+      user: '#7aa2ff',
+      assistant: '#d0bcff',
+      tool: '#ffcf6e',
+      system: '#6f6891',
+      diff: '#9be89b',
+    },
+    accents: {
+      build: '#8dffb0',
+      plan: '#7aa2ff',
+      brand: DAYA_BRAND,
+      success: '#8dffb0',
+      warning: '#ffcf6e',
+      error: '#ff6b81',
+      info: '#7de9ff',
+    },
+    diffBg: {
+      add: '#142e20',
+      rem: '#3a1e28',
+      ctx: '#0d0b18',
+    },
+  },
   catppuccin: {
     name: 'Catppuccin Mocha',
     window: {
