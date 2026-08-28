@@ -117,3 +117,25 @@ describe('gateway billing (manual top-ups)', () => {
     expect(d.topup.status).toBe('cancelled');
   });
 });
+
+describe('gateway stripe integration (fallback when unconfigured)', () => {
+  it('/portal/api/checkout falls back to manual mode without STRIPE_SECRET_KEY', async () => {
+    const r = await request('/portal/api/checkout', { method: 'POST', token: 'tk-ana', body: { usd: 10 } });
+    expect(r.status).toBe(200);
+    const d = JSON.parse(r.text) as { mode: string; topup: Topup };
+    expect(d.mode).toBe('manual');
+    expect(d.topup.status).toBe('pending');
+  });
+
+  it('rejects checkout with invalid amount', async () => {
+    const r = await request('/portal/api/checkout', { method: 'POST', token: 'tk-ana', body: { usd: 1 } });
+    expect(r.status).toBe(400);
+  });
+
+  it('stripe webhook returns 200-unconfigured and does not crash', async () => {
+    const r = await request('/stripe/webhook', { method: 'POST', body: { id: 'evt_test' } });
+    expect(r.status).toBe(200);
+    const d = JSON.parse(r.text) as { outcome: string };
+    expect(d.outcome).toBe('unconfigured');
+  });
+});

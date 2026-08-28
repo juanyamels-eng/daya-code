@@ -2,6 +2,7 @@ import type { ServerResponse } from 'node:http';
 import type { GatewayConfig, GatewayUser, Topup } from './config.js';
 import { configFilePath, readConfigFile, writeConfigFile } from './config.js';
 import { createTopup, listTopups, approveTopup, cancelTopup, tokensForUsd } from './topups.js';
+import { createCheckoutSession, stripeConfigured } from './stripePay.js';
 import type { Identity } from './server.js';
 
 const TOPUP_MIN_USD = 5;
@@ -85,4 +86,61 @@ export function handleCancelTopup(cfg: GatewayConfig, identity: Identity | undef
 
 export function currentUserQuota(cfg: GatewayConfig, name: string): number | undefined {
   return cfg.users.find((u) => u.name === name)?.quota;
+}
+
+export async function handleStripeCheckout(
+  cfg: GatewayConfig,
+  identity: Identity | undefined,
+  baseUrl: string,
+  body: unknown,
+  res: ServerResponse,
+): Promise<void> {
+  if (!identity || identity.admin) {
+    return json(res, 401, { error: 'valid user API key required' });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  const usd = typeof b['usd'] === 'number' ? b['usd'] : Number(b['usd']);
+  if (!Number.isFinite(usd) || usd < TOPUP_MIN_USD || usd > TOPUP_MAX_USD) {
+    return json(res, 400, { error: `usd must be between ${TOPUP_MIN_USD} and ${TOPUP_MAX_USD}` });
+  }
+  const file = configFilePath(cfg);
+  const raw = readConfigFile(file);
+  const topup = createTopup(raw, identity.name, usd, undefined);
+  writeConfigFile(file, raw);
+  cfg.users = raw.users as GatewayUser[];
+
+  if (!stripeConfigured()) {
+    return json(res, 200, {
+      mode: 'manual',
+      topup,
+      tokens: topup.amountTokens,
+      rate: '250k tokens / $1',
+    });
+  }
+  const checkout = await createCheckoutSession(topup.code, usd, baseUrl);
+  if (!checkout.ok) {
+    return json(res, 200, {
+      mode: 'manual',
+      topup,
+      tokens: topup.amountTokens,
+      stripeError: checkout.error,
+    });
+  }
+  json(res, 200, {
+    mode: 'stripe',
+    topup,
+    tokens: topup.amountTokens,
+    checkoutUrl: checkout.url,
+  });
+}
+
+/** Approve a top-up by code after a confirmed Stripe payment. */
+export function approveByCode(cfg: GatewayConfig, code: string): boolean {
+  const file = configFilePath(cfg);
+  const raw = readConfigFile(file);
+  const result = approveTopup(raw, code);
+  if (!result) return false;
+  writeConfigFile(file, raw);
+  cfg.users = raw.users as GatewayUser[];
+  return true;
 }

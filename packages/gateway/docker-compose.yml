@@ -17,6 +17,11 @@ services:
       MISTRAL_API_KEY: "${MISTRAL_API_KEY:-}"
       HF_API_KEY: "${HF_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      # Stripe checkout (optional). Set these to enable card payments that
+      # auto-credit a user's quota via the /stripe/webhook endpoint.
+      STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY:-}"
+      STRIPE_WEBHOOK_SECRET: "${STRIPE_WEBHOOK_SECRET:-}"
+      GATEWAY_PUBLIC_URL: "${GATEWAY_PUBLIC_URL:-}"
     volumes:
       - daya-usage:/root/.daya/gateway
       - ./daya.gateway.json:/app/daya.gateway.json:ro

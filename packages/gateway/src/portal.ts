@@ -135,12 +135,17 @@ export function handlePortal(host: string | undefined, res: ServerResponse): voi
     $('t-go').onclick=async()=>{
       const usd=Number(document.getElementById('t-usd').value);
       if(!usd||usd<5){alert('Minimum $5');return;}
-      const r=await fetch('/portal/api/topup',{method:'POST',headers:{authorization:'Bearer '+localStorage.getItem(KEY),'content-type':'application/json'},body:JSON.stringify({usd})});
+      const r=await fetch('/portal/api/checkout',{method:'POST',headers:{authorization:'Bearer '+localStorage.getItem(KEY),'content-type':'application/json'},body:JSON.stringify({usd})});
       const d=await r.json();
       if(!r.ok){document.getElementById('t-res').innerHTML='<span class="muted" style="color:#ff8aa0">'+ (d.error||'error') +'</span>';return;}
-      document.getElementById('t-res').innerHTML='<p>Send <b>$'+usd+'</b> and give this code to your admin:</p>'+
-        '<pre style="user-select:all">'+d.topup.code+'</pre>'+
-        '<p class="muted">Credits '+d.tokens.toLocaleString()+' tokens at '+d.rate+'.</p>';
+      if(d.mode==='stripe'&&d.checkoutUrl){window.location.href=d.checkoutUrl;return;}
+      if(d.mode==='manual'){
+        document.getElementById('t-res').innerHTML='<p>Send <b>$'+usd+'</b> and give this code to your admin:</p>'+
+          '<pre style="user-select:all">'+d.topup.code+'</pre>'+
+          '<p class="muted">Credits '+d.tokens.toLocaleString()+' tokens at '+(d.rate||'250k/$1')+'.</p>';
+        return;
+      }
+      document.getElementById('t-res').innerHTML='<span class="muted">'+JSON.stringify(d)+'</span>';
     };
     $('go').onclick=()=>{token=$('key').value.trim()||localStorage.getItem(KEY)||'';if(!token){alert('Paste your API key');return;}localStorage.setItem(KEY,token);load(token);};
     if(token)load(token);

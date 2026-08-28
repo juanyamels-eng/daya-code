@@ -26,7 +26,10 @@ import {
   handleListTopups,
   handleApproveTopup,
   handleCancelTopup,
+  handleStripeCheckout,
+  approveByCode,
 } from './billing.js';
+import { handleStripeWebhook } from './stripePay.js';
 
 const MAX_BODY = 10 * 1024 * 1024;
 
@@ -292,6 +295,32 @@ export function createGateway(cfg: GatewayConfig, usage?: UsageStore): Server {
           return json(res, 400, { error: { message: 'Invalid JSON body', type: 'invalid_request' } });
         }
         return handleCreateTopup(cfg, identity, body, res);
+      }
+      if (url === '/portal/api/checkout' && req.method === 'POST') {
+        const identity = authenticate(cfg, bearerToken(req));
+        const host = req.headers['host'] ? String(req.headers['host']) : '';
+        const baseUrl = process.env['GATEWAY_PUBLIC_URL'] ?? `http://${host}`;
+        const raw = await readBody(req);
+        let body: unknown = {};
+        try {
+          body = JSON.parse(raw);
+        } catch {
+          return json(res, 400, { error: { message: 'Invalid JSON body', type: 'invalid_request' } });
+        }
+        return await handleStripeCheckout(cfg, identity, baseUrl, body, res);
+      }
+
+      // ---- Stripe webhook ----
+      if (url === '/stripe/webhook' && req.method === 'POST') {
+        const payload = await readBody(req);
+        const signature = req.headers['stripe-signature'];
+        const outcome = handleStripeWebhook(payload, signature ? String(signature) : undefined, (code) =>
+          approveByCode(cfg, code),
+        );
+        res.setHeader('content-type', 'application/json');
+        res.statusCode = outcome === 'invalid' ? 400 : 200;
+        res.end(JSON.stringify({ received: true, outcome }));
+        return;
       }
 
       // ---- Admin: top-ups / billing ----
