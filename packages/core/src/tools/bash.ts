@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import type { ToolContext, ToolResult } from '../types.js';
 import { BashInputSchema, ok, err } from './index.js';
 
@@ -23,15 +23,33 @@ export async function runBash(input: unknown, ctx: ToolContext): Promise<ToolRes
       cwd: ctx.cwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      // POSIX: own process group so the whole tree is killable on timeout.
+      // Windows has no process groups via spawn; the tree is torn down with taskkill instead.
+      ...(isWindows ? { windowsHide: true } : { detached: true }),
     });
 
     let stdout = '';
     let stderr = '';
     let truncated = false;
 
+    const killTree = (): void => {
+      if (isWindows) {
+        // cmd.exe exiting does not kill its children; /T /F takes down the whole tree.
+        execFile('taskkill', ['/pid', String(child.pid ?? ''), '/T', '/F'], () => {});
+      } else {
+        const pid = child.pid;
+        if (pid === undefined) return;
+        try {
+          process.kill(-pid, 'SIGTERM');
+        } catch {
+          child.kill('SIGTERM');
+        }
+      }
+    };
+
     const timer = setTimeout(() => {
-      child.kill('SIGTERM');
       truncated = true;
+      killTree();
     }, timeoutMs);
 
     child.stdout?.on('data', (chunk: Buffer) => {

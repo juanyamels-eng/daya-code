@@ -1,4 +1,4 @@
-export interface DayaTheme {
+﻿export interface DayaTheme {
   name: string;
   window: {
     border: string;
@@ -26,6 +26,11 @@ export interface DayaTheme {
     warning: string;
     error: string;
     info: string;
+  };
+  diffBg: {
+    add: string;
+    rem: string;
+    ctx: string;
   };
 }
 
@@ -59,6 +64,11 @@ export const themes: Record<string, DayaTheme> = {
       error: '#f38ba8',
       info: '#89dceb',
     },
+    diffBg: {
+      add: '#1e3625',
+      rem: '#3b2028',
+      ctx: '#1e1e2e',
+    },
   },
   dracula: {
     name: 'Dracula',
@@ -88,6 +98,11 @@ export const themes: Record<string, DayaTheme> = {
       warning: '#f1fa8c',
       error: '#ff5555',
       info: '#8be9fd',
+    },
+    diffBg: {
+      add: '#20352b',
+      rem: '#37222c',
+      ctx: '#21222c',
     },
   },
   nord: {
@@ -119,6 +134,11 @@ export const themes: Record<string, DayaTheme> = {
       error: '#bf616a',
       info: '#88c0d0',
     },
+    diffBg: {
+      add: '#2c3a30',
+      rem: '#3b2a2f',
+      ctx: '#2e3440',
+    },
   },
   gruvbox: {
     name: 'Gruvbox',
@@ -148,6 +168,11 @@ export const themes: Record<string, DayaTheme> = {
       warning: '#fabd2f',
       error: '#cc241d',
       info: '#83a598',
+    },
+    diffBg: {
+      add: '#2e3a2b',
+      rem: '#3f2828',
+      ctx: '#282828',
     },
   },
   'tokyo-night': {
@@ -179,6 +204,11 @@ export const themes: Record<string, DayaTheme> = {
       error: '#f7768e',
       info: '#7dcfff',
     },
+    diffBg: {
+      add: '#1d3a2b',
+      rem: '#3a2230',
+      ctx: '#1a1b26',
+    },
   },
   'one-dark': {
     name: 'One Dark',
@@ -208,6 +238,11 @@ export const themes: Record<string, DayaTheme> = {
       warning: '#e5c07b',
       error: '#e06c75',
       info: '#56b6c2',
+    },
+    diffBg: {
+      add: '#253b2c',
+      rem: '#3b282c',
+      ctx: '#282c34',
     },
   },
 };

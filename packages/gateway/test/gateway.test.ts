@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
-import { createGateway } from '../src/server.js';
+import { createGateway, authenticate } from '../src/server.js';
 import type { GatewayConfig } from '../src/config.js';
 import type { UsageRecord } from '../src/usage.js';
 
@@ -111,6 +111,14 @@ describe('gateway', () => {
     expect(r.status).toBe(401);
   });
 
+  it('rejects disabled users at authentication', () => {
+    const disabledCfg = { ...cfg, users: [{ name: 'zzz', token: 'tk-zzz', enabled: false }] };
+    expect(authenticate(disabledCfg, 'tk-zzz')).toBeUndefined();
+    expect(authenticate(disabledCfg, 'adminkey')?.admin).toBe(true);
+    const dupToken = { ...cfg, users: [{ name: 'no', token: 'tk-ana', enabled: false }, { name: 'ana', token: 'tk-ana', enabled: true }] };
+    expect(authenticate(dupToken, 'tk-ana')?.name).toBe('ana');
+  });
+
   it('fails over to the secondary upstream when the primary returns 429', async () => {
     const body = {
       model: 'cerebras-llama',
@@ -147,6 +155,36 @@ describe('gateway', () => {
   it('admin key bypasses quota', async () => {
     const r = await post('/v1/chat/completions', 'adminkey', { model: 'secondary/raw-model', messages: [{ role: 'user', content: 'y'.repeat(5000) }], stream: false }, false);
     expect(r.status).toBe(200);
+  });
+
+  it('answers OPTIONS preflight with CORS headers', async () => {
+    const res = await fetch(base + '/v1/chat/completions', { method: 'OPTIONS' });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    expect(res.headers.get('access-control-allow-headers')).toContain('authorization');
+  });
+
+  it('returns 400 on malformed URL encoding in admin routes', async () => {
+    const { request } = await import('node:http');
+    const u = new URL(base);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = request(
+        {
+          host: u.hostname,
+          port: u.port,
+          path: '/admin/api/users/%zz',
+          method: 'DELETE',
+          headers: { authorization: 'Bearer adminkey' },
+        },
+        (r) => {
+          r.resume();
+          r.on('end', () => resolve(r.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    expect(status).toBe(400);
   });
 
   it('writes usage records to the usage file', async () => {

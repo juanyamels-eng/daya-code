@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { buildServer, type BuildServerOptions } from '../src/server.js';
+import { jsonSchemaToZod } from '../src/tools.js';
 
 function createTestServer(opts: BuildServerOptions = {}): McpServer {
   return buildServer({
@@ -88,5 +90,28 @@ describe('buildServer', () => {
 
     await client.close();
     await server.close();
+  });
+});
+
+describe('jsonSchemaToZod', () => {
+  it('turns a bare enum (no type) into z.enum', () => {
+    const schema = jsonSchemaToZod({ enum: ['a', 'b'] });
+    expect(schema).toBeInstanceOf(z.ZodEnum);
+    expect(schema.safeParse('a').success).toBe(true);
+    expect(schema.safeParse('c').success).toBe(false);
+  });
+
+  it('keeps the string enum inline case working', () => {
+    const schema = jsonSchemaToZod({ type: 'string', enum: ['x', 'y'] });
+    expect(schema.safeParse('x').success).toBe(true);
+    expect(schema.safeParse('z').success).toBe(false);
+  });
+
+  it('marks objects strict only when additionalProperties is false', () => {
+    const strict = jsonSchemaToZod({ type: 'object', properties: { a: { type: 'string' } }, required: ['a'], additionalProperties: false });
+    expect(strict.safeParse({ a: 'v', extra: 1 }).success).toBe(false);
+
+    const loose = jsonSchemaToZod({ type: 'object', properties: { a: { type: 'string' } } });
+    expect(loose.safeParse({ a: 'v', extra: 1 }).success).toBe(true);
   });
 });

@@ -11,8 +11,6 @@ import {
   createProvider,
   SessionStore,
   loadConventions,
-  buildFileTree,
-  formatFileTree,
   estimateCost,
   formatCost,
   getGitDiff,
@@ -32,6 +30,18 @@ import { getTheme, THEME_NAMES, DEFAULT_THEME, type DayaTheme } from './themes.j
 import { glyphs, type GlyphSet } from './glyphs.js';
 import type { EditReviewChange } from '@daya-code/core';
 
+// Single source of truth for the version shown in the TUI header.
+const DAYA_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as {
+      version?: string;
+    };
+    return pkg.version ? `v${pkg.version}` : 'dev';
+  } catch {
+    return 'dev';
+  }
+})();
+
 export interface AppProps {
   initialPrompt: string;
   provider: ProviderName;
@@ -48,7 +58,7 @@ export interface AppProps {
 }
 
 interface LogEntry {
-  kind: 'user' | 'assistant' | 'tool' | 'system' | 'diff' | 'diag';
+  kind: 'user' | 'assistant' | 'tool' | 'system' | 'diff' | 'diag' | 'section' | 'meta';
   text: string;
   meta?: string;
   metaColor?: string;
@@ -97,6 +107,7 @@ export function App(props: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const columns = stdout.columns ?? 80;
+  const rows = stdout.rows ?? 24;
   const g = glyphs();
   const [input, setInput] = useState('');
   const [mode, setMode] = useState<AgentMode>('build');
@@ -106,7 +117,8 @@ export function App(props: AppProps): React.ReactElement {
   const [permissionInput, setPermissionInput] = useState('');
   const [reviewPrompt, setReviewPrompt] = useState<ReviewPrompt | null>(null);
   const reviewModeRef = useRef(false);
-  const [steps, setSteps] = useState<{ text: string; done: boolean }[]>([]);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [now, setNow] = useState(Date.now());
   const [themeName, setThemeName] = useState(props.theme ?? DEFAULT_THEME);
   const theme = getTheme(themeName);
   const agentRef = useRef<Agent>();
@@ -114,6 +126,7 @@ export function App(props: AppProps): React.ReactElement {
   propsRef.current = props;
   const messagesRef = useRef<Message[]>([]);
   const abortRef = useRef<AbortController>();
+  const busyRef = useRef(false);
   const sessionRef = useRef<string | null>(null);
   const storeRef = useRef<SessionStore | null>(null);
   const projectMemoryRef = useRef<ReturnType<typeof projectMemory> | null>(null);
@@ -128,6 +141,7 @@ export function App(props: AppProps): React.ReactElement {
     toolsRun: 0,
   });
   const perfStartRef = useRef<number>(Date.now());
+  const runStartRef = useRef<number>(Date.now());
 
   const handlePermission = useCallback(async (action: PermissionAction): Promise<PermissionDecision> => {
     return new Promise((resolve) => {
@@ -155,6 +169,7 @@ export function App(props: AppProps): React.ReactElement {
       lintCmd: p.lintCmd,
       testCmd: p.testCmd,
       autoCommit: p.autoCommit,
+      watchFiles: true,
       architectModel: p.architectModel,
       memoryFile: join(p.cwd, 'DAYA.md'),
       daya: {
@@ -164,6 +179,19 @@ export function App(props: AppProps): React.ReactElement {
       },
       requestApproval: reviewModeRef.current ? handleReviewApproval : undefined,
     });
+  };
+
+  // Rebuild the agent without losing the working one if composition fails
+  // (e.g. a provider configured without an API key). The old agent stays live.
+  const safeRebuildAgent = (p: AppProps, arrow: string): boolean => {
+    try {
+      agentRef.current = buildAgent(p);
+      return true;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setLogs((prev) => [...prev, { kind: 'system', text: `failed to rebuild agent ${arrow} ${msg}` }]);
+      return false;
+    }
   };
 
   useEffect(() => {
@@ -185,22 +213,24 @@ export function App(props: AppProps): React.ReactElement {
         sessionRef.current = session.meta.id;
       }
 
-      const tree = await buildFileTree(props.cwd, 2).catch(() => null);
       const initial: LogEntry[] = [
         { kind: 'system', text: `${props.cwd}` },
+        {
+          kind: 'system',
+          text: `/help for commands ${g.bullet} Tab plan↔build ${g.bullet} ↑/↓ scroll ${g.bullet} @file attaches`,
+        },
       ];
-      if (tree && formatFileTree(tree).trim()) {
-        initial.push({ kind: 'system', text: formatFileTree(tree), meta: 'project structure' });
-      }
-      initial.push({
-        kind: 'system',
-        text: `Tab toggles plan/build ${g.bullet} /help lists commands ${g.bullet} @file attaches`,
-        meta: `theme: ${themeName}`,
-      });
       setLogs(initial);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Live clock so the elapsed time keeps ticking while a run is in progress.
+  useEffect(() => {
+    if (!busy) return;
+    const id = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(id);
+  }, [busy]);
 
   useInput((input, key) => {
     if (key.ctrl && input === 'c') {
@@ -209,6 +239,15 @@ export function App(props: AppProps): React.ReactElement {
     }
     if (key.ctrl && input === 'l') {
       setLogs([]);
+      return;
+    }
+    if (logs.length > 0 && key.upArrow) {
+      const budget = Math.max(4, Math.max(6, rows - 8) - 3);
+      setScrollTop((v) => Math.min(Math.max(0, logs.length - budget), v + 1));
+      return;
+    }
+    if (key.downArrow) {
+      setScrollTop((v) => Math.max(0, v - 1));
       return;
     }
     if (key.shift && key.return) {
@@ -234,8 +273,8 @@ export function App(props: AppProps): React.ReactElement {
         existing.messages = messagesRef.current;
         await store.save(existing);
       }
-    } catch {
-      // silent
+    } catch (e) {
+      setLogs((prev) => [...prev, { kind: 'system', text: `warning: could not save session — ${e instanceof Error ? e.message : String(e)}` }]);
     }
   };
 
@@ -266,6 +305,13 @@ export function App(props: AppProps): React.ReactElement {
       onPermissionSubmit(text);
       return;
     }
+    // One agent run at a time: don't lose the typed command while the agent
+    // is still working on the previous one.
+    if (busyRef.current) {
+      setLogs((prev) => [...prev, { kind: 'system', text: 'still working… use Ctrl+C to stop the current run, then retry' }]);
+      setInput(text);
+      return;
+    }
     const trimmed = text.trim();
     setInput('');
     if (!trimmed) return;
@@ -285,44 +331,67 @@ export function App(props: AppProps): React.ReactElement {
 
     if (trimmed === '/help') {
       const customCmds = Object.keys(customPromptsRef.current);
-      const customSection = customCmds.length > 0
-        ? `\nfaint Custom prompts: ${customCmds.map((c) => `/${c}`).join(', ')}`
-        : '';
-      const lines = [
-        `Commands`,
-        `  /help           Show this help`,
-        `  /mode plan      Switch to plan mode (read-only)`,
-        `  /mode build     Switch to build mode`,
-        `  /theme          Switch UI theme (${THEME_NAMES.join(', ')})`,
-        `  /context        Token usage, cost, context info`,
-        `  /compact        Compact history`,
-        `  /commit         Generate message + commit`,
-        `  /checkpoint     Save state`,
-        `  /checkpoints    List checkpoints`,
-        `  /rollback <id>  Restore checkpoint`,
-        `  /stats          Session analytics`,
-        `  /summary        Files touched, cost, time`,
-        `  /mem <k>: <v>   Save memory to DAYA.md`,
-        `  /memlist        List project memory`,
-        `  /memforget <k>  Delete a memory`,
-        `  /undo           Revert last commit`,
-        `  /restore <id>   Resume session`,
-        `  /search <q>     Search sessions`,
-        `  /sessions       List sessions`,
-        `  /export [file]  Export to markdown`,
-        `  /model <id>     Switch model`,
-        `  /review         Toggle hunk review (approve each edit)`,
-        `  /clear          Clear screen`,
-        `  /quit           Exit`,
-        ``,
-        `Shortcuts`,
-        `  Tab             plan ${g.swap} build`,
-        `  Ctrl+L          clear screen`,
-        `  Shift+Enter     newline in prompt`,
-        `  @path/file      attach a file`,
-        customSection,
+      const W = 18;
+      const sections: Array<[string, Array<[string, string]>]> = [
+        ['Session', [
+          ['/quit', 'exit and save'],
+          ['/clear', 'clear screen'],
+          ['/export [f]', 'export to markdown'],
+          ['/summary', 'files, cost, time'],
+          ['/stats', 'session analytics'],
+        ]],
+        ['Mode & view', [
+          ['/mode plan', 'read-only planning'],
+          ['/mode build', 'execute changes'],
+          ['/theme', `switch theme ${g.bullet} ${THEME_NAMES.join(', ')}`],
+          ['/model <id>', 'switch model'],
+          ['Tab', 'plan ' + g.swap + ' build'],
+          ['↑/↓', 'scroll history'],
+          ['Shift+Enter', 'newline in prompt'],
+          ['Ctrl+L', 'clear panel'],
+        ]],
+        ['Context', [
+          ['/context', 'tokens, cost, files'],
+          ['/compact', 'summarize history'],
+        ]],
+        ['Git & review', [
+          ['/commit', 'preview diff, then commit'],
+          ['/undo', 'revert last commit'],
+          ['/review', 'toggle hunk review'],
+        ]],
+        ['Memory & checkpoints', [
+          ['/mem <k>: <v>', 'save to DAYA.md'],
+          ['/memlist', 'list project memory'],
+          ['/memforget <k>', 'delete a memory'],
+          ['/checkpoint', 'save state'],
+          ['/checkpoints', 'list checkpoints'],
+          ['/rollback <id>', 'restore state'],
+        ]],
+        ['Sessions', [
+          ['/restore <id>', 'resume a session'],
+          ['/search <q>', 'search sessions'],
+          ['/sessions', 'list saved sessions'],
+          ['@path/file', 'attach a file'],
+        ]],
       ];
-      setLogs((prev) => [...prev, { kind: 'system', text: lines.join('\n'), meta: 'help' }]);
+      const helpLogs: LogEntry[] = [{ kind: 'section', text: 'Commands' }];
+      for (const [title, cmds] of sections) {
+        helpLogs.push({ kind: 'section', text: title });
+        helpLogs.push({ kind: 'system', text: cmds.map(([cmd, desc]) => `  ${cmd.padEnd(W)} ${desc}`).join('\n') });
+      }
+      if (customCmds.length > 0) {
+        helpLogs.push({ kind: 'section', text: 'Custom prompts' });
+        helpLogs.push({
+          kind: 'system',
+          text: customCmds.map((c) => `  /${c}${' '.repeat(Math.max(1, W - c.length - 1))}${c === 'architect' ? 'two-pass plan → execute' : 'run custom prompt'}`).join('\n'),
+        });
+      }
+      helpLogs.push({
+        kind: 'system',
+        text: `Tip: keep ${g.hairline}${g.hairline}${g.hairline} visually separated runs, use Ctrl+L to clear, and /theme to switch palettes.`,
+        metaColor: theme.text.muted,
+      });
+      setLogs((prev) => [...prev, ...helpLogs]);
       return;
     }
 
@@ -396,8 +465,9 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
         return;
       }
       const message = generateCommitMessage(diff);
-      const ok = await agentRef.current.autoCommit(message, props.cwd, new AbortController().signal);
-      setLogs((prev) => [...prev, { kind: 'system', text: ok ? `committed ${g.dash} ${message}` : 'commit failed', meta: message }]);
+      setLogs((prev) => [...prev, { kind: 'diff', text: `commit preview ${g.dash} ${message}`, meta: truncateDiff(diff, 40) }]);
+      const ok = await agentRef.current.autoCommit(message, props.cwd, new AbortController().signal, { force: true });
+      setLogs((prev) => [...prev, { kind: 'system', text: ok ? `committed ${g.dash} ${message}` : 'commit failed' }]);
       return;
     }
 
@@ -628,8 +698,8 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
         return;
       }
       const p = { ...propsRef.current, model: next };
+      if (!safeRebuildAgent(p, g.arrow)) return;
       propsRef.current = p;
-      agentRef.current = buildAgent(p);
       setLogs((prev) => [...prev, { kind: 'system', text: `model ${g.arrow} ${next}` }]);
       return;
     }
@@ -637,7 +707,7 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
     if (trimmed === '/review') {
       reviewModeRef.current = !reviewModeRef.current;
       const p = propsRef.current;
-      agentRef.current = buildAgent(p);
+      if (!safeRebuildAgent(p, g.arrow)) return;
       setLogs((prev) => [...prev, { kind: 'system', text: `hunk review ${g.arrow} ${reviewModeRef.current ? 'ON' : 'OFF'}` }]);
       return;
     }
@@ -660,9 +730,11 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
   };
 
   const runAgent = async (prompt: string, displayText: string): Promise<void> => {
+    runStartRef.current = Date.now();
+    setScrollTop(0);
     setLogs((prev) => [...prev, { kind: 'user', text: displayText }]);
     setBusy(true);
-    setSteps([]);
+    busyRef.current = true;
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     let assistantBuffer = '';
@@ -679,14 +751,12 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
             case 'assistant_text_delta': {
               assistantBuffer += (ev.data as { delta: string }).delta;
               tokenStatsRef.current.outputTokens += Math.max(1, Math.ceil((ev.data as { delta: string }).delta.length / 4));
-              setSteps(parseSteps(assistantBuffer));
               setLogs((prev) => upsertAssistant(prev, assistantBuffer));
               break;
             }
             case 'tool_started': {
               const { name } = ev.data as { name: string; input: unknown };
               toolTimingsRef.current[name] = { name, startedAt: Date.now() };
-              setLogs((prev) => [...prev, { kind: 'tool', text: `${name}` }]);
               break;
             }
             case 'tool_finished': {
@@ -695,13 +765,13 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
               const timing = toolTimingsRef.current[name];
               const elapsed = timing ? `${((Date.now() - timing.startedAt) / 1000).toFixed(1)}s` : '';
               delete toolTimingsRef.current[name];
-              const icon = result.isError ? g.cross : g.check;
+              const icon = result.isError ? g.cross : toolGlyph(name, g.safe);
               setLogs((prev) => [
                 ...prev,
                 {
                   kind: 'tool',
                   text: `${icon} ${name}${elapsed ? `  ${g.bullet} ${elapsed}` : ''}`,
-                  meta: result.output,
+                  meta: truncateOutput(result.output),
                   metaColor: result.isError ? theme.accents.error : theme.text.muted,
                 },
               ]);
@@ -734,6 +804,9 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
             }
             case 'done': {
               messagesRef.current = (ev.data as { messages: Message[] }).messages;
+              setLogs((prev) => finalizeStreaming(prev));
+              const doneDur = ((Date.now() - runStartRef.current) / 1000).toFixed(1);
+              setLogs((prev) => [...prev, { kind: 'meta', text: `${g.box} ${modeRef.current} ${g.bullet} ${props.model} · ${doneDur}s` }]);
               if (tokenStatsRef.current.toolsRun > 0) {
                 setLogs((prev) => [...prev, { kind: 'system', text: `summary ${g.dash} ${buildSessionSummary()}`, meta: 'run complete · /summary to re-view' }]);
               }
@@ -753,7 +826,11 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
       await agentRef.current!.persistMemories(messagesRef.current);
     } catch (e) {
       setLogs((prev) => [...prev, { kind: 'system', text: `error ${g.dash} ${e instanceof Error ? e.message : String(e)}`, metaColor: theme.accents.error }]);
+      // Put the failed command back in the input box so it can be retried
+      // or edited instead of being lost.
+      setInput(displayText);
     } finally {
+      busyRef.current = false;
       setBusy(false);
       await saveSession();
     }
@@ -799,41 +876,54 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
   const maxTokens = info?.maxTokens ?? 0;
   const usedTokens = stats.inputTokens + stats.outputTokens;
   const contextPct = maxTokens > 0 ? Math.min(100, Math.round((usedTokens / maxTokens) * 100)) : 0;
+  const ctxFillN = Math.round((contextPct / 100) * 10);
+  const ctxColor = contextPct >= 90 ? theme.accents.error : contextPct >= 70 ? theme.accents.warning : theme.accents.info;
+
+  const panelHeight = Math.max(6, rows - 8);
+  const logBudget = Math.max(4, panelHeight - 3);
+  const maxScroll = Math.max(0, logs.length - logBudget);
+  const st = Math.min(scrollTop, maxScroll);
+  const visibleLogs = logs.slice(Math.max(0, logs.length - logBudget - st));
+  const hidden = logs.length - visibleLogs.length;
+  const elapsed = busy ? fmtElapsed(now - runStartRef.current) : fmtElapsed(Date.now() - perfStartRef.current);
 
   return (
     <Box flexDirection="column">
-      {/* Minimal header (Claude Code style — no box, no background) */}
-      <Box justifyContent="space-between" width="100%">
+      {/* Header: brand | mode pills centered | provider/model (quiet) */}
+      <Box justifyContent="space-between" width="100%" marginBottom={1}>
         <Text color={theme.text.muted}>
-          {g.brand} DAYA Code {g.bullet} v0.5.1
+          {g.brand} DAYA Code {g.bullet} {DAYA_VERSION}
         </Text>
+        <Box flexGrow={1} justifyContent="center">
+          <Text>
+            <Text color={mode === 'build' ? theme.accents.build : theme.text.muted} bold={mode === 'build'}>
+              {g.buildDot} build
+            </Text>
+            <Text color={theme.text.muted}>{'  '}</Text>
+            <Text color={mode === 'plan' ? theme.accents.plan : theme.text.muted} bold={mode === 'plan'}>
+              {g.planDot} plan
+            </Text>
+          </Text>
+        </Box>
         <Text color={theme.text.muted}>
-          {props.provider} {' '} {props.model} {' '} {themeName}
+          {props.provider} {g.bullet} {props.model}
         </Text>
-      </Box>
-      <Box marginBottom={1}>
-        <Text color={theme.text.muted}>{g.hairline.repeat(Math.max(40, columns - 1))}</Text>
       </Box>
 
       {/* Messages */}
-      <Box flexDirection="column" height={19} flexGrow={1}>
-        {logs.map((entry, i) => (
+      <Box flexDirection="column" height={panelHeight}>
+        {hidden > 0 && (
+          <Text color={theme.text.muted}>
+            {g.dots} {hidden} older {hidden === 1 ? 'line' : 'lines'} {g.dash} ↑ to scroll down
+          </Text>
+        )}
+        {visibleLogs.map((entry, i) => (
           <MessageRow key={i} entry={entry} theme={theme} />
         ))}
-        {steps.length > 0 && (
-          <Box flexDirection="column">
-            {steps.map((s, i) => (
-              <Text key={i} color={s.done ? theme.accents.success : theme.text.primary}>
-                {s.done ? `${g.check} ` : `${g.planDot} `}
-                {s.text}
-              </Text>
-            ))}
-          </Box>
-        )}
         {busy && (
           <Box marginTop={1}>
             <Text color={theme.text.muted}>
-              <Spinner type="dots" /> working
+              <Spinner type="dots" /> working {g.bullet} {elapsed}
             </Text>
           </Box>
         )}
@@ -854,7 +944,7 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
               {reviewPrompt.change.occurrences ? ` (${reviewPrompt.change.occurrences} match${reviewPrompt.change.occurrences > 1 ? 'es' : ''})` : ''}
             </Text>
             {reviewPrompt.change.old_text && (
-              <DiffMeta text={formatChangeDiff(reviewPrompt.change)} theme={theme} />
+              <ChangeDiff change={reviewPrompt.change} theme={theme} columns={columns} />
             )}
             {!reviewPrompt.change.old_text && (
               <DiffMeta text={`+ [write] ${reviewPrompt.change.new_text.slice(0, 120)}${reviewPrompt.change.new_text.length > 120 ? g.dots : ''}`} theme={theme} forced={theme.accents.success} />
@@ -877,21 +967,62 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
         />
       </Box>
 
-      {/* Status bar (bare, no border) */}
+      {/* Status line (stats always visible, StatsLine style) */}
       <Box justifyContent="space-between" width="100%" marginTop={1}>
-        <Text color={modeColor}>
-          {busy ? 'running ' : `${mode} `}
-          {g.bullet} <Text color={theme.text.muted}>{busy ? 'ctrl+c to cancel' : `ctrl+c exit ${g.bullet} /help ${g.bullet} tab plan/build`}</Text>
+        <Text color={theme.text.muted}>
+          <Text color={modeColor}>{busy ? `running ${g.bullet} ${elapsed}` : mode}</Text>
+          {'  '}{g.bullet}{' '}
+          {busy ? 'ctrl+c to cancel' : `tab plan/build ${g.bullet} /help`}
         </Text>
         <Text color={theme.text.muted}>
-          {(usedTokens / 1000).toFixed(1)}k{' '}
-          {maxTokens > 0 ? `${g.bullet} ${contextPct}% ctx ` : ''}
-          {g.bullet} {formatCost(estimateCost(props.model, stats.inputTokens, stats.outputTokens))}
-          {' '}{g.bullet} {stats.toolsRun} tools
+          {stats.toolsRun} tool{stats.toolsRun === 1 ? '' : 's'} {g.bullet} {(usedTokens / 1000).toFixed(1)}k
+          {maxTokens > 0 && (
+            <>
+              {' '}{g.bullet}{' '}
+              <Text color={ctxColor}>{g.blockFull.repeat(ctxFillN)}{g.blockEmpty.repeat(10 - ctxFillN)}</Text>
+              {` ${contextPct}%`}
+            </>
+          )}
+          {' '}{g.bullet} {formatCost(estimateCost(props.model, stats.inputTokens, stats.outputTokens))}
         </Text>
       </Box>
     </Box>
   );
+}
+
+const TOOL_GLYPHS_PRETTY: Record<string, string> = {
+  bash: '$',
+  view: '⌕',
+  read_file: '⌕',
+  glob: '*',
+  grep: '∷',
+  write_file: '↳',
+  edit_file: '✎',
+  apply_patch: '%',
+  patch: '%',
+  webfetch: '↗',
+  web_fetch: '↗',
+  websearch: '◈',
+  web_search: '◈',
+  todo_write: '☑',
+  todo: '☑',
+};
+
+const TOOL_GLYPHS_ASCII: Record<string, string> = {
+  bash: '$',
+  grep: '>',
+  write_file: '>',
+  edit_file: '*',
+  apply_patch: '%',
+  patch: '%',
+  todo_write: '[ ]',
+  todo: '[ ]',
+  default: '*',
+};
+
+function toolGlyph(name: string, safe: boolean): string {
+  if (safe) return TOOL_GLYPHS_ASCII[name] ?? TOOL_GLYPHS_ASCII['default']!;
+  return TOOL_GLYPHS_PRETTY[name] ?? '⚙';
 }
 
 function describeAction(action: PermissionAction): string {
@@ -928,39 +1059,58 @@ export function MessageRow({ entry, theme }: { entry: LogEntry; theme: DayaTheme
       ? theme.roles.user
       : entry.kind === 'assistant'
         ? theme.text.primary
-        : entry.kind === 'tool'
-          ? entry.metaColor ?? theme.text.muted
-          : entry.kind === 'diag'
-            ? entry.metaColor ?? theme.accents.warning
-            : entry.kind === 'diff'
-              ? theme.roles.diff
-              : theme.text.muted;
+        : entry.kind === 'section'
+          ? theme.accents.info
+          : entry.kind === 'tool'
+            ? entry.metaColor ?? theme.text.muted
+            : entry.kind === 'diag'
+              ? entry.metaColor ?? theme.accents.warning
+              : entry.kind === 'diff'
+                ? theme.roles.diff
+                : theme.text.muted;
 
   const prefix =
-    entry.kind === 'tool'
+    entry.kind === 'user'
       ? ''
-      : entry.kind === 'diag'
-        ? g.warn
-        : entry.kind === 'diff'
-          ? g.right
-          : entry.kind === 'system'
-            ? g.bullet
-            : '';
+      : entry.kind === 'tool'
+        ? ''
+        : entry.kind === 'diag'
+          ? g.warn
+          : entry.kind === 'diff'
+            ? ''
+            : entry.kind === 'section'
+              ? ''
+              : entry.kind === 'system'
+                ? g.bullet
+                : '';
 
   return (
     <Box flexDirection="column" marginBottom={isSpeech ? 1 : 0}>
-      <Box>
+      <Box paddingLeft={entry.kind === 'section' ? 0 : 1}>
         {prefix && (
           <Text color={color}>
             {prefix}{' '}
           </Text>
         )}
-        <Text color={color} wrap="wrap">
-          {entry.text}
-        </Text>
+        {entry.kind === 'assistant' ? (
+          <MarkdownLines text={entry.text} theme={theme} />
+        ) : entry.kind === 'diff' && entry.meta ? null : entry.kind === 'user' ? (
+          entry.text.split('\n').map((line, i) => (
+            <Text key={i} wrap="wrap" backgroundColor={theme.window.panel} color={theme.text.primary}>
+              <Text color={theme.roles.user}>{g.userBar}{' '}</Text>
+              <Text color={theme.text.primary}>{line || ' '}</Text>
+            </Text>
+          ))
+        ) : (
+          <Text color={color} wrap="wrap" bold={entry.kind === 'section'}>
+            {entry.text}
+          </Text>
+        )}
       </Box>
       {entry.meta && (
-        <DiffMeta text={entry.meta} theme={theme} forced={entry.metaColor} />
+        <Box paddingLeft={entry.kind === 'tool' ? 1 : 2}>
+          <DiffMeta text={entry.meta} theme={theme} forced={entry.metaColor} />
+        </Box>
       )}
     </Box>
   );
@@ -973,25 +1123,216 @@ export function DiffMeta({ text, theme, forced }: { text: string; theme: DayaThe
     <Box flexDirection="column">
       {lines.map((line, i) => {
         const trimmed = line.trimStart();
-        let color = forced ?? theme.text.muted;
+        const { color, bold } = diffLineStyle(trimmed, theme, forced);
+        let bg: string | undefined;
         if (!forced) {
-          if (trimmed.startsWith('+') && !trimmed.startsWith('+++') && !trimmed.startsWith('+ git')) {
-            color = theme.accents.success;
-          } else if (trimmed.startsWith('-') && !trimmed.startsWith('---') && !trimmed.startsWith('- git')) {
-            color = theme.accents.error;
-          } else if (trimmed.startsWith('@@')) {
-            color = theme.accents.info;
-          }
+          if (trimmed.startsWith('+')) bg = theme.diffBg.add;
+          else if (trimmed.startsWith('-')) bg = theme.diffBg.rem;
+          else if (trimmed.startsWith('@@') || trimmed.startsWith('diff --git') || trimmed.startsWith('---') || trimmed.startsWith('+++')) bg = theme.diffBg.ctx;
         }
         const gutter = i === 0 ? g.gutterCorner : g.gutterBar;
         return (
-          <Text key={i} color={color} wrap="wrap">
+          <Text key={i} color={color} backgroundColor={bg} wrap="wrap" bold={bold}>
             {gutter} {line}
           </Text>
         );
       })}
     </Box>
   );
+}
+
+function diffLineStyle(trimmed: string, theme: DayaTheme, forced?: string): { color: string; bold: boolean } {
+  if (forced) return { color: forced, bold: false };
+  let color = theme.text.muted;
+  let bold = false;
+  if (trimmed.startsWith('@@')) {
+    color = theme.accents.info;
+    bold = true;
+  } else if (trimmed.startsWith('diff --git') || trimmed.startsWith('index ') || trimmed.startsWith('+++') || trimmed.startsWith('---')) {
+    color = theme.accents.warning;
+  } else if (trimmed.startsWith('+') && !trimmed.startsWith('+ git')) {
+    color = theme.accents.success;
+  } else if (trimmed.startsWith('-') && !trimmed.startsWith('- git')) {
+    color = theme.accents.error;
+  }
+  return { color, bold };
+}
+
+function ChangeDiff({ change, theme, columns }: { change: EditReviewChange; theme: DayaTheme; columns: number }): React.ReactElement {
+  const oldLines = (change.old_text ?? '').split('\n');
+  const newLines = change.new_text.split('\n');
+  const max = Math.max(oldLines.length, newLines.length);
+  // Sequential fallback for very large hunks so the columns stay usable.
+  if (max > 60) return <DiffMeta text={formatChangeDiff(change)} theme={theme} />;
+  const half = Math.max(16, Math.floor((columns - 4) / 2));
+  return (
+    <Box flexDirection="column">
+      <Box width={columns - 2}>
+        <Box width={half}>
+          <Text color={theme.text.muted}>- before</Text>
+        </Box>
+        <Box width={half}>
+          <Text color={theme.text.muted}>+ after</Text>
+        </Box>
+      </Box>
+      {Array.from({ length: max }, (_, i) => {
+        const o = oldLines[i] ?? '';
+        const n = newLines[i] ?? '';
+        return (
+          <Box key={i}>
+            <Box width={half}>
+              <Text color={theme.accents.error} wrap="wrap">{o ? `- ${o}` : ' '}</Text>
+            </Box>
+            <Box width={half}>
+              <Text color={theme.accents.success} wrap="wrap">{n ? `+ ${n}` : ' '}</Text>
+            </Box>
+          </Box>
+        );
+      })}
+    </Box>
+  );
+}
+
+function fmtElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  return m > 0 ? `${m}m${String(s % 60).padStart(2, '0')}s` : `${s}s`;
+}
+
+interface InlineSeg {
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+  code?: boolean;
+}
+
+function parseInline(text: string): InlineSeg[] {
+  const out: InlineSeg[] = [];
+  const re = /\*\*([^*]+)\*\*|\*([^*]+)\*|`([^`]+)`/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) out.push({ text: text.slice(last, m.index) });
+    if (m[1] !== undefined) out.push({ text: m[1], bold: true });
+    else if (m[2] !== undefined) out.push({ text: m[2], italic: true });
+    else out.push({ text: m[3]!, code: true });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push({ text: text.slice(last) });
+  return out;
+}
+
+function InlineText({ text, base, theme }: { text: string; base: string; theme: DayaTheme }): React.ReactElement {
+  return (
+    <Text color={base} wrap="wrap">
+      {parseInline(text).map((s, i) => (
+        <Text key={i} color={s.code ? theme.accents.info : base} bold={s.bold} italic={s.italic}>
+          {s.text}
+        </Text>
+      ))}
+    </Text>
+  );
+}
+
+/** Lightweight markdown renderer for assistant replies (no extra deps). */
+function MarkdownLines({ text, theme }: { text: string; theme: DayaTheme }): React.ReactElement {
+  const g = glyphs();
+  const { stdout } = useStdout();
+  const columns = stdout.columns ?? 80;
+  const lines = text.split('\n');
+  const rows: React.ReactNode[] = [];
+  let code: string[] | null = null;
+  const pushCode = (): void => {
+    if (code !== null) {
+      if (code.length > 0) {
+        rows.push(
+          <Box key={`code-${rows.length}`} flexDirection="column">
+            {code.map((l, i) => (
+              <Text key={i} color={theme.text.secondary} wrap="wrap">{l}</Text>
+            ))}
+          </Box>,
+        );
+      } else {
+        rows.push(<Text key={`code-${rows.length}`} color={theme.text.muted}>```</Text>);
+      }
+      code = null;
+    }
+  };
+  for (const raw of lines) {
+    const ln = raw.trimEnd();
+    if (/^ {0,3}```/.test(ln)) {
+      if (code) pushCode();
+      else code = [];
+      continue;
+    }
+    if (code) {
+      code.push(ln);
+      continue;
+    }
+    if (!ln.trim()) continue;
+
+    const h = /^ {0,3}(#{1,6})\s+(.*)$/.exec(ln);
+    if (h) {
+      rows.push(
+        <Text key={`h-${rows.length}`} color={theme.accents.info} bold wrap="wrap">
+          {h[2]!}
+        </Text>,
+      );
+      continue;
+    }
+    if (/^ {0,3}([-*_])(\s*\1\s*){1,}$/.test(ln) || /^ {0,3}-{3,}\s*$/.test(ln)) {
+      rows.push(
+        <Text key={`hr-${rows.length}`} color={theme.text.muted}>
+          {g.hairline.repeat(Math.max(8, columns - 4))}
+        </Text>,
+      );
+      continue;
+    }
+    const cb = /^ {0,3}[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(ln);
+    if (cb) {
+      const done = cb[1]!.toLowerCase() === 'x';
+      rows.push(
+        <Box key={`cb-${rows.length}`}>
+          <Text color={done ? theme.accents.success : theme.text.muted}>{done ? g.check : g.planDot} </Text>
+          <InlineText text={cb[2]!} base={done ? theme.text.secondary : theme.text.primary} theme={theme} />
+        </Box>,
+      );
+      continue;
+    }
+    const bl = /^ {0,3}[-*+]\s+(.*)$/.exec(ln);
+    if (bl) {
+      rows.push(
+        <Box key={`bl-${rows.length}`}>
+          <Text color={theme.text.secondary}>{g.bullet} </Text>
+          <InlineText text={bl[1]!} base={theme.text.primary} theme={theme} />
+        </Box>,
+      );
+      continue;
+    }
+    const nl = /^ {0,3}(\d+)[.)]\s+(.*)$/.exec(ln);
+    if (nl) {
+      rows.push(
+        <Box key={`nl-${rows.length}`}>
+          <Text color={theme.text.secondary}>{nl[1]}.</Text>
+          <InlineText text={` ${nl[2]!}`} base={theme.text.primary} theme={theme} />
+        </Box>,
+      );
+      continue;
+    }
+    const bq = /^ {0,3}>\s?(.*)$/.exec(ln);
+    if (bq) {
+      rows.push(
+        <Box key={`bq-${rows.length}`}>
+          <Text color={theme.text.muted}>{g.gutterBar} </Text>
+          <InlineText text={bq[1]!} base={theme.text.secondary} theme={theme} />
+        </Box>,
+      );
+      continue;
+    }
+    rows.push(<InlineText key={`p-${rows.length}`} text={ln} base={theme.text.primary} theme={theme} />);
+  }
+  pushCode();
+  return <Box flexDirection="column">{rows}</Box>;
 }
 
 function loadConventionsSync(cwd: string): string | undefined {
@@ -1022,32 +1363,41 @@ function formatChangeDiff(change: EditReviewChange): string {
   return out.join('\n');
 }
 
-function parseSteps(text: string): { text: string; done: boolean }[] {
-  const steps: { text: string; done: boolean }[] = [];
-  const seen = new Set<string>();
-  const re = /(?:^|\n)[ \t]*[-*] \[([ xX])\][ \t]*(.+)$/gm;
-  let m: RegExpExecArray | null;
-  let dedupeKey: string;
-  while ((m = re.exec(text)) !== null) {
-    const body = m[2]!.trim();
-    const key = body.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    steps.push({ text: body, done: m[1] !== ' ' });
-  }
-  return steps;
-}
-
-function upsertAssistant(logs: LogEntry[], text: string): LogEntry[] {
+export function upsertAssistant(logs: LogEntry[], text: string): LogEntry[] {
+  const g = glyphs();
+  const caretText = `${text}${g.caret}`;
   const idx = [...logs].reverse().findIndex((l) => l.kind === 'assistant' && l.meta === 'streaming');
   if (idx === -1) {
-    return [...logs, { kind: 'assistant', text, meta: 'streaming' }];
+    return [...logs, { kind: 'assistant', text: caretText, meta: 'streaming' }];
   }
   const realIdx = logs.length - 1 - idx;
   const next = [...logs];
   const existing = next[realIdx];
   if (existing) {
-    next[realIdx] = { ...existing, text };
+    next[realIdx] = { ...existing, text: caretText };
   }
   return next;
+}
+
+export function finalizeStreaming(logs: LogEntry[]): LogEntry[] {
+  return logs.map((l) =>
+    l.kind === 'assistant' && l.meta === 'streaming'
+      ? { ...l, text: l.text.replace(/[▍|]$/, ''), meta: undefined }
+      : l,
+  );
+}
+
+export const MAX_TOOL_LINES = 30;
+
+export function truncateOutput(output: string): string {
+  const lines = output.split('\n');
+  if (lines.length <= MAX_TOOL_LINES) return output;
+  const extra = lines.length - MAX_TOOL_LINES;
+  return `${lines.slice(0, MAX_TOOL_LINES).join('\n')}\n… ${extra} more ${extra === 1 ? 'line' : 'lines'}`;
+}
+
+export function truncateDiff(diff: string, maxLines: number): string {
+  const lines = diff.split('\n');
+  if (lines.length <= maxLines) return diff;
+  return `${lines.slice(0, maxLines).join('\n')}\n… ${lines.length - maxLines} more ${lines.length - maxLines === 1 ? 'line' : 'lines'}`;
 }

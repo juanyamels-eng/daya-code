@@ -1,6 +1,7 @@
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
-import { streamText, type CoreMessage, type CoreTool } from 'ai';
+import { jsonSchema, streamText, type CoreMessage, type CoreTool } from 'ai';
+import { z } from 'zod';
 import type { Provider, ProviderEvent, ProviderStreamParams, ToolDefinition } from '../types.js';
 import { MockProvider } from './mock.js';
 
@@ -40,6 +41,29 @@ export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
 
 export const PRESET_NAMES = Object.keys(PROVIDER_PRESETS);
 
+/** The environment variable that supplies the API key for each provider. */
+export const PROVIDER_ENV_KEYS: Record<string, string> = {
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+  daya: 'DAYA_API_KEY',
+  groq: 'GROQ_API_KEY',
+  cerebras: 'CEREBRAS_API_KEY',
+  gemini: 'GEMINI_API_KEY',
+  nvidia: 'NVIDIA_API_KEY',
+  mistral: 'MISTRAL_API_KEY',
+  'github-models': 'GITHUB_MODELS_API_KEY',
+  huggingface: 'HF_API_KEY',
+  ollama: 'OLLAMA_API_KEY',
+};
+
+export function missingProviderKey(providerName: string, envKey = PROVIDER_ENV_KEYS[providerName]): Error {
+  const hint = envKey ? `Set ${envKey}` : 'Pass an API key';
+  return new Error(
+    `[daya] provider "${providerName}" requires an API key. ${hint} (or use --api-key / set one in ~/.daya/config.json).`,
+  );
+}
+
 export interface ProviderOptions {
   name: ProviderName;
   model: string;
@@ -52,16 +76,16 @@ export function createProvider(opts: ProviderOptions): Provider {
     return new MockProvider();
   }
   if (opts.name === 'anthropic') {
-    if (!opts.apiKey) return new MockProvider();
+    if (!opts.apiKey) throw missingProviderKey('anthropic');
     return new AnthropicProvider(opts.apiKey, opts.model);
   }
   if (opts.name === 'openai' || opts.name === 'openai-compatible') {
-    if (!opts.apiKey) return new MockProvider();
+    if (!opts.apiKey) throw missingProviderKey(opts.name);
     return new OpenAIProvider(opts.apiKey, opts.model, opts.baseUrl, opts.name);
   }
   if (opts.name === 'openrouter') return openaiPreset('openrouter', opts);
   if (opts.name === 'daya') {
-    if (!opts.apiKey) return new MockProvider();
+    if (!opts.apiKey) throw missingProviderKey('daya');
     return new OpenAIProvider(opts.apiKey, opts.model, 'https://api.daya.ai/v1', 'daya');
   }
   if (opts.name in PROVIDER_PRESETS) return openaiPreset(opts.name, opts);
@@ -70,7 +94,7 @@ export function createProvider(opts: ProviderOptions): Provider {
 
 function openaiPreset(name: string, opts: ProviderOptions): Provider {
   const preset = PROVIDER_PRESETS[name]!;
-  if (!opts.apiKey && preset.needsKey) return new MockProvider();
+  if (!opts.apiKey && preset.needsKey) throw missingProviderKey(name);
   const apiKey = opts.apiKey ?? 'ollama';
   const baseUrl = opts.baseUrl ?? preset.baseUrl;
   const model = opts.model === 'mock-echo-v1' ? preset.model : (opts.model || preset.model);
@@ -114,8 +138,9 @@ export class FallbackProvider implements Provider {
   }
 }
 
-function toCoreMessages(messages: import('../types.js').Message[]): CoreMessage[] {
+export function toCoreMessages(messages: import('../types.js').Message[]): CoreMessage[] {
   const out: CoreMessage[] = [];
+  const toolNames = new Map<string, string>();
   for (const m of messages) {
     if (m.role === 'user') {
       out.push({ role: 'user', content: m.content });
@@ -124,11 +149,12 @@ function toCoreMessages(messages: import('../types.js').Message[]): CoreMessage[
       if (m.content) content.push({ type: 'text', text: m.content });
       if (m.toolCalls) {
         for (const tc of m.toolCalls) {
+          toolNames.set(tc.id, tc.name);
           content.push({
-            type: 'tool-use',
+            type: 'tool-call',
             toolCallId: tc.id,
             toolName: tc.name,
-            input: tc.input as Record<string, unknown>,
+            args: tc.input as Record<string, unknown>,
           });
         }
       }
@@ -136,18 +162,16 @@ function toCoreMessages(messages: import('../types.js').Message[]): CoreMessage[
     } else if (m.role === 'system') {
       out.push({ role: 'system', content: m.content });
     } else if (m.role === 'tool') {
+      // Tool results must live in their own `role: 'tool'` message — the AI SDK
+      // rejects mixing tool-use and tool-result parts inside one assistant
+      // message (InvalidPromptError / TypeValidationError).
       const tr = {
         type: 'tool-result' as const,
         toolCallId: m.toolCallId ?? 'unknown',
-        toolName: 'tool',
+        toolName: toolNames.get(m.toolCallId ?? '') ?? 'tool',
         result: m.content,
       };
-      const last = out[out.length - 1];
-      if (last && last.role === 'assistant' && Array.isArray(last.content)) {
-        (last.content as unknown as Array<unknown>).push(tr);
-      } else {
-        out.push({ role: 'tool', content: [tr] as never });
-      }
+      out.push({ role: 'tool', content: [tr] as never });
     }
   }
   return out;
@@ -156,9 +180,14 @@ function toCoreMessages(messages: import('../types.js').Message[]): CoreMessage[
 function buildToolsObject(tools: ToolDefinition[]): Record<string, CoreTool> {
   const obj: Record<string, CoreTool> = {};
   for (const t of tools) {
+    const schema = t.inputSchema as unknown;
+    // Tools ship either a raw JSON Schema (base tools) or a zod instance
+    // (daya/memory tools). The AI SDK requires a Schema — pass zod through
+    // untouched and wrap plain JSON Schema objects with jsonSchema().
+    const parameters = schema instanceof z.ZodType ? schema : jsonSchema(schema as never);
     obj[t.name] = {
       description: t.description,
-      parameters: t.inputSchema as never,
+      parameters: parameters as never,
     } as CoreTool;
   }
   return obj;

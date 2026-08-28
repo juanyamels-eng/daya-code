@@ -25,42 +25,85 @@ export function registerTools(
   }
 }
 
-function jsonSchemaToZod(schema: Record<string, unknown>): z.ZodType {
-  const properties = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
-  const required = (schema.required ?? []) as string[];
-  const shape: Record<string, z.ZodType> = {};
+export function jsonSchemaToZod(schema: Record<string, unknown>): z.ZodTypeAny {
+  const t = schema.type as string | undefined;
 
-  for (const [key, prop] of Object.entries(properties)) {
-    let field: z.ZodType;
-    const t = prop.type as string | undefined;
-
-    if (t === 'string') {
-      const enums = prop.enum as string[] | undefined;
-      field = enums ? z.enum(enums as [string, ...string[]]) : z.string();
-    } else if (t === 'number' || t === 'integer') {
-      field = z.number();
-    } else if (t === 'boolean') {
-      field = z.boolean();
-    } else if (t === 'object') {
-      field = z.record(z.unknown());
-    } else if (t === 'array') {
-      field = z.array(z.unknown());
-    } else {
-      field = z.unknown();
-    }
-
-    if (prop.description) {
-      field = field.describe(prop.description as string);
-    }
-
-    if (!required.includes(key)) {
-      field = field.optional();
-    }
-
-    shape[key] = field;
+  if (
+    t === undefined &&
+    Array.isArray(schema.enum) &&
+    schema.enum.length > 0 &&
+    schema.enum.every((v) => typeof v === 'string')
+  ) {
+    return z.enum(schema.enum as [string, ...string[]]);
   }
 
-  return z.object(shape);
+  if (!t || t === 'object') {
+    const properties = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
+    const required = (schema.required ?? []) as string[];
+    const shape: Record<string, z.ZodTypeAny> = {};
+
+    for (const [keyInternal, prop] of Object.entries(properties)) {
+      let field: z.ZodTypeAny = jsonSchemaToZod(prop);
+      if (prop.description) {
+        field = field.describe(prop.description as string);
+      }
+      if (!required.includes(keyInternal)) {
+        field = field.optional();
+      }
+      shape[keyInternal] = field;
+    }
+
+    const object = z.object(shape);
+    return schema.additionalProperties === false ? object.strict() : object;
+  }
+
+  if (t === 'string') {
+    const enums = schema.enum as string[] | undefined;
+    if (enums && enums.length > 0) {
+      return z.enum(enums as [string, ...string[]]);
+    }
+    const minLength = schema.minLength as number | undefined;
+    const maxLength = schema.maxLength as number | undefined;
+    const pattern = schema.pattern as string | undefined;
+    let field: z.ZodString = z.string();
+    if (typeof minLength === 'number') field = field.min(minLength);
+    if (typeof maxLength === 'number') field = field.max(maxLength);
+    if (typeof pattern === 'string') {
+      try {
+        field = field.regex(new RegExp(pattern));
+      } catch {
+        // invalid regex in schema — leave the field unconstrained
+      }
+    }
+    return field;
+  }
+  if (t === 'integer') {
+    const minimum = schema.minimum as number | undefined;
+    const maximum = schema.maximum as number | undefined;
+    let field: z.ZodNumber = z.number().int();
+    if (typeof minimum === 'number') field = field.min(minimum);
+    if (typeof maximum === 'number') field = field.max(maximum);
+    return field;
+  }
+  if (t === 'number') {
+    const minimum = schema.minimum as number | undefined;
+    const maximum = schema.maximum as number | undefined;
+    let field: z.ZodNumber = z.number();
+    if (typeof minimum === 'number') field = field.min(minimum);
+    if (typeof maximum === 'number') field = field.max(maximum);
+    return field;
+  }
+  if (t === 'boolean') {
+    return z.boolean();
+  }
+  if (t === 'array') {
+    const items = schema.items as Record<string, unknown> | undefined;
+    return items ? z.array(jsonSchemaToZod(items)) : z.array(z.unknown());
+  }
+  if (t === 'null') {
+    return z.null();
+  }
+  return z.unknown();
 }
 
 function toMcpResult(result: ToolResult): {

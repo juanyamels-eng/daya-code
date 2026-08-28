@@ -1,7 +1,9 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { MODEL_CATALOG } from './catalog.js';
 import type { GatewayConfig, GatewayUser } from './config.js';
 import { UsageStore, type UsageRecord } from './usage.js';
+import { RateLimiter, quotaNear } from './ratelimit.js';
 import {
   forwardChat,
   estimatePromptTokens,
@@ -16,6 +18,7 @@ import {
   handleAdminDelete,
   handleAdminDashboard,
   handleAdminRotateToken,
+  handleAdminPatch,
 } from './admin.js';
 import {
   handlePortal,
@@ -40,11 +43,14 @@ export interface Identity {
   name: string;
   admin: boolean;
   quota?: number;
+  rpm?: number;
 }
 
+// Configurable CORS origin; restrict it (e.g. https://your.domain) when the
+// gateway is exposed past a browser. Defaults to * for API clients.
 const CORS = {
-  'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'GET, POST, OPTIONS',
+  'access-control-allow-origin': process.env['GATEWAY_CORS_ORIGIN'] ?? '*',
+  'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
   'access-control-allow-headers': 'authorization, content-type',
 };
 
@@ -54,21 +60,36 @@ function json(res: ServerResponse, status: number, obj: unknown): void {
   res.end(data);
 }
 
+/** Signals a client error (bad request body, malformed URL, etc.). */
+class BadRequestError extends Error {}
+
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let settled = false;
+    const fail = (msg: string): void => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(msg));
+      req.destroy();
+    };
     req.on('data', (c: Buffer) => {
       size += c.length;
       if (size > MAX_BODY) {
-        reject(new Error('Payload too large'));
-        req.destroy();
+        fail('Payload too large');
         return;
       }
       chunks.push(c);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    });
+    req.on('error', () => fail('Request stream error'));
+    req.on('aborted', () => fail('Request aborted by client'));
+    req.on('close', () => fail('Connection closed before request completed'));
   });
 }
 
@@ -79,14 +100,22 @@ export function bearerToken(req: IncomingMessage): string | undefined {
   return match ? match[1]!.trim() : undefined;
 }
 
+/** Constant-time string comparison to avoid leaking token contents via timing. */
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
 export function authenticate(cfg: GatewayConfig, token: string | undefined): Identity | undefined {
   if (!token) return undefined;
-  if (cfg.adminKey && token === cfg.adminKey) {
+  if (cfg.adminKey && safeEqual(token, cfg.adminKey)) {
     return { token, name: 'admin', admin: true };
   }
-  const user = cfg.users.find((u) => u.token === token);
+  const user = cfg.users.find((u) => u.enabled !== false && u.token && safeEqual(token, u.token));
   if (!user) return undefined;
-  return { token, name: user.name, admin: false, quota: user.quota };
+  return { token, name: user.name, admin: false, quota: user.quota, rpm: user.rpm };
 }
 
 function checkQuota(id: Identity, usage: UsageStore, promptTokens: number): { ok: boolean; used: number | null } {
@@ -95,13 +124,23 @@ function checkQuota(id: Identity, usage: UsageStore, promptTokens: number): { ok
   return { ok: used <= id.quota, used };
 }
 
-async function handleChat(cfg: GatewayConfig, identity: Identity, usage: UsageStore, body: unknown, res: ServerResponse): Promise<void> {
+async function handleChat(cfg: GatewayConfig, identity: Identity, usage: UsageStore, limiter: RateLimiter, body: unknown, res: ServerResponse): Promise<void> {
   if (!body || typeof body !== 'object') {
     return json(res, 400, { error: { message: 'Invalid JSON body', type: 'invalid_request' } });
   }
   const reqBody = body as Record<string, unknown>;
   const model = typeof reqBody['model'] === 'string' ? reqBody['model'] : 'free';
   const isStream = reqBody['stream'] === true;
+
+  // Rate limit per user (requests per minute).
+  if (!identity.admin && !limiter.allow(identity.token, identity.rpm)) {
+    return json(res, 429, {
+      error: {
+        message: `Rate limit exceeded (${identity.name}). Try again in a moment.`,
+        type: 'rate_limited',
+      },
+    });
+  }
 
   const promptTokens = estimatePromptTokens(reqBody);
   const quota = checkQuota(identity, usage, promptTokens);
@@ -111,9 +150,29 @@ async function handleChat(cfg: GatewayConfig, identity: Identity, usage: UsageSt
     });
   }
 
+  // Warn when the user is within 10% of their monthly quota.
+  const nearQuota = quotaNear(usage.monthTokens(identity.token), identity.quota);
+  if (nearQuota) {
+    res.setHeader('x-daya-quota-warning', '1');
+  }
+
+  // Clamp max_tokens to whatever is left of the monthly quota so one runaway
+  // request cannot blow past it (admins and unlimited users are untouched).
+  const upstreamBody: Record<string, unknown> = { ...reqBody };
+  if (!identity.admin && typeof identity.quota === 'number' && identity.quota > 0) {
+    const remaining = identity.quota - usage.monthTokens(identity.token);
+    const cap = Math.max(1, Math.floor(remaining - promptTokens));
+    const requested = typeof upstreamBody['max_tokens'] === 'number' ? (upstreamBody['max_tokens'] as number) : Infinity;
+    if (cap < requested) upstreamBody['max_tokens'] = cap;
+  }
+
   let forwarded;
   try {
-    forwarded = await forwardChat(cfg, model, reqBody, identity.admin);
+    // If the client hangs up mid-request, stop spending tokens/bandwidth on
+    // the upstream instead of streaming into the void.
+    const clientGone = new AbortController();
+    res.on('close', () => clientGone.abort());
+    forwarded = await forwardChat(cfg, model, upstreamBody, identity.admin, clientGone.signal);
   } catch (err) {
     if (err instanceof ModelNotAvailableError) {
       return json(res, 404, { error: { message: err.message, type: 'model_not_found' } });
@@ -240,9 +299,17 @@ async function streamToClient(
 
 export function createGateway(cfg: GatewayConfig, usage?: UsageStore): Server {
   const store = usage ?? new UsageStore(cfg.usageFile);
+  const limiter = new RateLimiter();
   return createServer(async (req, res) => {
     const url = (req.url ?? '').split('?')[0] ?? '';
     try {
+      // CORS preflight for browser clients hitting the OpenAI-compatible API.
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, CORS);
+        res.end();
+        return;
+      }
+
       if (url === '/v1/models' && req.method === 'GET') {
         const data = MODEL_CATALOG.map((e) => ({ id: e.id, object: 'model', owned_by: 'daya-gateway', free: e.free }));
         return json(res, 200, { object: 'list', data });
@@ -268,15 +335,32 @@ export function createGateway(cfg: GatewayConfig, usage?: UsageStore): Server {
         }
         return handleAdminUpsert(cfg, identity, body, res);
       }
+      const nameOf = (suffix: string): string => {
+        try {
+          return decodeURIComponent(url.slice('/admin/api/users/'.length, suffix ? url.length - suffix.length : url.length));
+        } catch {
+          throw new BadRequestError('Invalid URL encoding');
+        }
+      };
+
+      if (url.startsWith('/admin/api/users/') && req.method === 'PUT') {
+        const identity = authenticate(cfg, bearerToken(req));
+        const raw = await readBody(req);
+        let body: unknown = {};
+        try {
+          body = JSON.parse(raw);
+        } catch {
+          return json(res, 400, { error: { message: 'Invalid JSON body', type: 'invalid_request' } });
+        }
+        return handleAdminPatch(cfg, identity, nameOf(''), body, res);
+      }
       if (url.startsWith('/admin/api/users/') && req.method === 'DELETE') {
         const identity = authenticate(cfg, bearerToken(req));
-        const name = decodeURIComponent(url.slice('/admin/api/users/'.length));
-        return handleAdminDelete(cfg, identity, name, res);
+        return handleAdminDelete(cfg, identity, nameOf(''), res);
       }
       if (url.startsWith('/admin/api/users/') && req.method === 'POST' && url.endsWith('/rotate-token')) {
         const identity = authenticate(cfg, bearerToken(req));
-        const name = decodeURIComponent(url.slice('/admin/api/users/'.length, url.lastIndexOf('/rotate-token')));
-        return handleAdminRotateToken(cfg, identity, name, res);
+        return handleAdminRotateToken(cfg, identity, nameOf('/rotate-token'), res);
       }
 
       // ---- User portal ----
@@ -325,7 +409,15 @@ export function createGateway(cfg: GatewayConfig, usage?: UsageStore): Server {
           approveByCode(cfg, code),
         );
         res.setHeader('content-type', 'application/json');
-        res.statusCode = outcome === 'invalid' ? 400 : 200;
+        if (outcome === 'invalid') {
+          res.statusCode = 400;
+        } else if (outcome === 'unconfigured') {
+          // No STRIPE_SECRET configured — tell Stripe to retry later instead
+          // of silently swallowing the event.
+          res.statusCode = 503;
+        } else {
+          res.statusCode = 200;
+        }
         res.end(JSON.stringify({ received: true, outcome }));
         return;
       }
@@ -364,8 +456,13 @@ export function createGateway(cfg: GatewayConfig, usage?: UsageStore): Server {
       } catch {
         return json(res, 400, { error: { message: 'Invalid JSON body', type: 'invalid_request' } });
       }
-      await handleChat(cfg, identity, store, body, res);
+      await handleChat(cfg, identity, store, limiter, body, res);
     } catch (err) {
+      if (err instanceof BadRequestError) {
+        if (!res.headersSent) json(res, 400, { error: { message: err.message, type: 'invalid_request' } });
+        else res.end();
+        return;
+      }
       const tooLarge = err instanceof Error && err.message === 'Payload too large';
       const msg = tooLarge ? 'Payload too large' : 'Internal error';
       const code = tooLarge ? 413 : 500;

@@ -57,7 +57,21 @@ const cli = meow(
 
 const VALID_PROVIDERS: ProviderName[] = ['mock', 'anthropic', 'openai', 'openrouter', 'daya', 'openai-compatible', ...(PRESET_NAMES as ProviderName[])];
 
+/** Keep the console in UTF-8 so box glyphs render in plain cmd.exe, not just Windows Terminal. */
+function ensureUtf8Console(): void {
+  if (process.platform !== 'win32') return;
+  if (!process.stdout.isTTY) return;
+  if (process.env.WT_SESSION || process.env.ConEmuANSI) return;
+  try {
+    require('child_process').execSync('chcp 65001>nul', { stdio: 'ignore' });
+  } catch {
+    /* non-fatal */
+  }
+}
+
 async function main(): Promise<void> {
+  ensureUtf8Console();
+
   const cfg = envOverrides(await loadConfig());
 
   const providerName = (cli.flags.provider ?? cfg.provider.name) as ProviderName;
@@ -77,7 +91,17 @@ async function main(): Promise<void> {
       process.exit(2);
     }
     const { runOnce } = await import('./run-once.js');
-    await runOnce({ prompt, provider: providerName, model, apiKey, baseUrl, cwd });
+    await runOnce({
+      prompt,
+      provider: providerName,
+      model,
+      apiKey,
+      baseUrl,
+      cwd,
+      lintCmd: cfg.lintCmd,
+      testCmd: cfg.testCmd,
+      autoCommit: cfg.autoCommit,
+    });
     return;
   }
 

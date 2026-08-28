@@ -146,6 +146,7 @@ export class LocalMemory {
 
   async get(namespace: string, key: string): Promise<LocalMemoryEntry | null> {
     const db = await this.open();
+    await this.purgeExpired();
     const row = db
       .prepare(
         'SELECT id, namespace, key, value, metadata, created_at as createdAt, expires_at as expiresAt FROM memory WHERE namespace = ? AND key = ?',
@@ -156,6 +157,7 @@ export class LocalMemory {
 
   async list(namespace: string, limit = 50): Promise<LocalMemoryEntry[]> {
     const db = await this.open();
+    await this.purgeExpired();
     const rows = db
       .prepare(
         'SELECT id, namespace, key, value, metadata, created_at as createdAt, expires_at as expiresAt FROM memory WHERE namespace = ? ORDER BY created_at DESC LIMIT ?',
@@ -225,6 +227,7 @@ export class LocalMemory {
 
   async delete(namespace: string, key: string): Promise<boolean> {
     const db = await this.open();
+    await this.purgeExpired();
     const info = db.prepare('DELETE FROM memory WHERE namespace = ? AND key = ?').run(namespace, key);
     return toNumber(info.changes) > 0;
   }

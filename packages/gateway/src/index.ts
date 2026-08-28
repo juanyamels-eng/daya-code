@@ -2,10 +2,12 @@
 
 import { loadConfig } from './config.js';
 import { createGateway } from './server.js';
+import { UsageStore } from './usage.js';
 
 const cfg = loadConfig();
 
-const server = createGateway(cfg);
+const usage = new UsageStore(cfg.usageFile);
+const server = createGateway(cfg, usage);
 
 const missingKeys = Object.entries(cfg.upstreams)
   .filter(([, up]) => !up.apiKey && up.baseUrl.startsWith('https://'))
@@ -30,7 +32,12 @@ server.listen(cfg.port, () => {
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     console.log('\n[gateway] shutting down');
-    server.close(() => process.exit(0));
+    server.close(() => {
+      void usage.flush().finally(() => process.exit(0));
+    });
+    // Drop idle keep-alive connections so close() can finish promptly instead
+    // of hanging on browsers/client libraries holding sockets open.
+    server.closeIdleConnections();
     setTimeout(() => process.exit(0), 500).unref();
   });
 }

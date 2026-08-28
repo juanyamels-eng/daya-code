@@ -267,9 +267,10 @@ describe('openai-compatible provider', () => {
     expect(p.model).toBe('gemini-2.5-flash');
   });
 
-  it('falls back to mock when no api key is set', () => {
-    const p = createProvider({ name: 'openai-compatible', model: 'llama3.2' });
-    expect(p.name).toBe('mock');
+  it('throws a clear error when no api key is set', () => {
+    expect(() => createProvider({ name: 'openai-compatible', model: 'llama3.2' })).toThrow(
+      /requires an API key/,
+    );
   });
 
   it('honors DAYA_BASE_URL env override', () => {
@@ -312,9 +313,8 @@ describe('free provider presets', () => {
     expect(p.name).toBe('ollama');
   });
 
-  it('falls back to mock when a keyed preset has no api key', () => {
-    const p = createProvider({ name: 'groq', model: 'x' });
-    expect(p.name).toBe('mock');
+  it('throws a clear error naming the env var when a keyed preset has no api key', () => {
+    expect(() => createProvider({ name: 'groq', model: 'x' })).toThrow(/GROQ_API_KEY/);
   });
 
   it('allows overriding baseUrl and model on a preset', () => {

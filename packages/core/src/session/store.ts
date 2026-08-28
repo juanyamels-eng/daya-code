@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, readdir, unlink } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, readdir, unlink, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { nanoid } from 'nanoid';
@@ -39,8 +39,13 @@ export class SessionStore {
   async get(id: string): Promise<Session | null> {
     const file = this.filePath(id);
     if (!existsSync(file)) return null;
-    const raw = await readFile(file, 'utf8');
-    return JSON.parse(raw) as Session;
+    try {
+      const raw = await readFile(file, 'utf8');
+      return JSON.parse(raw) as Session;
+    } catch {
+      // Corrupt/truncated session file — treat as absent instead of crashing.
+      return null;
+    }
   }
 
   async list(): Promise<SessionMeta[]> {
@@ -93,10 +98,11 @@ export class SessionStore {
     await this.init();
     session.meta.updatedAt = Date.now();
     const file = this.filePath(session.meta.id);
-    const tmp = `${file}.tmp`;
+    // Atomic replace: write to a temp file in the same directory, then rename
+    // over the target. A crash mid-write can never leave a truncated session.
+    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(tmp, JSON.stringify(session, null, 2), 'utf8');
-    await writeFile(file, JSON.stringify(session, null, 2), 'utf8');
-    await unlink(tmp).catch(() => undefined);
+    await rename(tmp, file);
   }
 
   async delete(id: string): Promise<void> {

@@ -61,6 +61,36 @@ describe('DayaClient', () => {
     const c = new DayaClient({ baseUrl: 'https://x', apiKey: 'bad', fetchImpl });
     await expect(c.request('GET', '/me')).rejects.toBeInstanceOf(DayaHttpError);
   });
+
+  it('fetchRaw aborts after timeout when the download hangs', async () => {
+    const ac = new AbortController();
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const signal = init?.signal as AbortSignal;
+      return await new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    }) as unknown as typeof fetch;
+    const c = new DayaClient({ baseUrl: 'https://x', apiKey: 'k', fetchImpl });
+    await expect(c.fetchRaw('https://cdn.example.com/big.png', { timeoutMs: 20, signal: ac.signal })).rejects.toThrow(
+      /timeout after 20ms/,
+    );
+  });
+
+  it('fetchRaw respects an already-aborted caller signal', async () => {
+    const ac = new AbortController();
+    ac.abort(new Error('canceled'));
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const signal = init?.signal as AbortSignal;
+      return await new Promise<Response>((_resolve, reject) => {
+        if (signal.aborted) reject(signal.reason);
+        else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    }) as unknown as typeof fetch;
+    const c = new DayaClient({ baseUrl: 'https://x', apiKey: 'k', fetchImpl });
+    await expect(c.fetchRaw('https://cdn.example.com/x.png', { signal: ac.signal, timeoutMs: 500 })).rejects.toThrow(
+      'canceled',
+    );
+  });
 });
 
 describe('daya_generate_image tool', () => {

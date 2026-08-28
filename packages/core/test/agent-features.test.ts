@@ -213,7 +213,7 @@ describe('getContextInfo', () => {
 });
 
 describe('revertLastCommit', () => {
-  it('reverts the last git commit', async () => {
+  it('reverts the last DAYA commit with a soft reset (non-destructive)', async () => {
     const dir = join(tmpdir(), `daya-test-revert-${Date.now()}`);
     await mkdir(dir, { recursive: true });
     const { execFile } = await import('node:child_process');
@@ -229,14 +229,44 @@ describe('revertLastCommit', () => {
 
     await writeFile(join(dir, 'a.txt'), 'second');
     await exec('git', ['add', '-A'], { cwd: dir });
-    await exec('git', ['commit', '-m', 'second commit'], { cwd: dir });
+    await exec('git', ['commit', '-m', 'daya: update a.txt'], { cwd: dir });
 
     const agent = makeAgent(dir);
     const hash = await agent.revertLastCommit(dir, new AbortController().signal);
     expect(hash).toBeTruthy();
 
+    // HEAD rolled back to the previous commit...
     const { stdout } = await exec('git', ['log', '-1', '--format=%s'], { cwd: dir });
     expect(stdout.trim()).toBe('first commit');
+
+    // ...but the user's change is preserved (soft reset, not --hard).
+    const content = await readFile(join(dir, 'a.txt'), 'utf8');
+    expect(content).toBe('second');
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('refuses to revert a commit that is not a DAYA commit', async () => {
+    const dir = join(tmpdir(), `daya-test-revert-refuse-${Date.now()}`);
+    await mkdir(dir, { recursive: true });
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const exec = promisify(execFile);
+
+    await exec('git', ['init'], { cwd: dir });
+    await exec('git', ['config', 'user.email', 'test@test.com'], { cwd: dir });
+    await exec('git', ['config', 'user.name', 'test'], { cwd: dir });
+    await writeFile(join(dir, 'a.txt'), 'mine');
+    await exec('git', ['add', '-A'], { cwd: dir });
+    await exec('git', ['commit', '-m', 'my own work'], { cwd: dir });
+
+    const agent = makeAgent(dir);
+    await expect(
+      agent.revertLastCommit(dir, new AbortController().signal),
+    ).rejects.toThrow(/refusing to undo/);
+
+    const { stdout } = await exec('git', ['log', '-1', '--format=%s'], { cwd: dir });
+    expect(stdout.trim()).toBe('my own work');
 
     await rm(dir, { recursive: true, force: true });
   });

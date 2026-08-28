@@ -15,6 +15,17 @@ export interface GlyphSet {
   dash: string;
   swap: string;
   right: string;
+  caret: string;
+  cornerTL: string;
+  cornerTR: string;
+  cornerBL: string;
+  cornerBR: string;
+  barV: string;
+  blockFull: string;
+  blockEmpty: string;
+  userBar: string;
+  box: string;
+  safe: boolean;
 }
 
 const PRETTY: GlyphSet = {
@@ -34,6 +45,17 @@ const PRETTY: GlyphSet = {
   dash: '\u2014',
   swap: '\u21c4',
   right: '\u25b8',
+  caret: '\u258d',
+  cornerTL: '\u250c',
+  cornerTR: '\u2510',
+  cornerBL: '\u2514',
+  cornerBR: '\u2518',
+  barV: '\u2502',
+  blockFull: '\u2588',
+  blockEmpty: '\u2591',
+  userBar: '\u00a6',
+  box: '\u25a3',
+  safe: true,
 };
 
 const SAFE: GlyphSet = {
@@ -53,12 +75,26 @@ const SAFE: GlyphSet = {
   dash: '-',
   swap: '<->',
   right: '>',
+  caret: '|',
+  cornerTL: '+',
+  cornerTR: '+',
+  cornerBL: '+',
+  cornerBR: '+',
+  barV: '|',
+  blockFull: '#',
+  blockEmpty: '-',
+  userBar: '|',
+  box: '>',
+  safe: false,
 };
 
 function unicodeSafe(): boolean {
-  if (process.platform !== 'win32') return true;
+  const override = process.env.DAYA_GLYPHS;
+  if (override === 'ascii') return false;
+  if (override === 'pretty') return true;
   if (!process.stdout.isTTY) return false;
-  return !!(process.env.WT_SESSION || process.env.WT_PROFILE_ID || process.env.TERM_PROGRAM || process.env.ConEmuANSI || process.env.VSCODE_CWD);
+  if (process.env.TERM === 'dumb') return false;
+  return true;
 }
 
 let cached: GlyphSet | undefined;

@@ -1,7 +1,9 @@
 import { resolve, isAbsolute } from 'node:path';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import type { ToolContext, ToolResult } from '../types.js';
 import { GrepInputSchema, ok, err } from './index.js';
+
+const MAX_GREP_FILE_BYTES = 5 * 1024 * 1024;
 
 export async function grepContent(input: unknown, ctx: ToolContext): Promise<ToolResult> {
   const parsed = GrepInputSchema.safeParse(input);
@@ -21,18 +23,23 @@ export async function grepContent(input: unknown, ctx: ToolContext): Promise<Too
   const matches: string[] = [];
   try {
     await walk(cwd, async (file) => {
-      if (includeRe && !includeRe.test(file)) return;
-      if (matches.length >= maxResults) return;
+      if (matches.length >= maxResults) return false;
+      if (includeRe && !includeRe.test(file)) return true;
+      const st = await stat(file).catch(() => null);
+      if (!st || !st.isFile() || st.size === 0 || st.size > MAX_GREP_FILE_BYTES) return true;
       const content = await readFile(file, 'utf8').catch(() => null);
-      if (content === null) return;
+      if (content === null) return true;
+      if (content.slice(0, 8192).includes('\u0000')) return true;
       const lines = content.split(/\r?\n/);
-      lines.forEach((line, i) => {
-        if (matches.length >= maxResults) return;
+      for (let i = 0; i < lines.length; i++) {
+        if (matches.length >= maxResults) break;
+        const line = lines[i]!;
         if (re.test(line)) {
           matches.push(`${file}:${i + 1}:${line}`);
           re.lastIndex = 0;
         }
-      });
+      }
+      return matches.length < maxResults;
     });
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
@@ -41,7 +48,7 @@ export async function grepContent(input: unknown, ctx: ToolContext): Promise<Too
   return ok(matches.length === 0 ? '(no matches)' : matches.join('\n'), { count: matches.length });
 }
 
-async function walk(dir: string, onFile: (file: string) => Promise<void>): Promise<void> {
+async function walk(dir: string, onFile: (file: string) => Promise<boolean>): Promise<void> {
   const entries = await readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist') continue;
@@ -49,7 +56,8 @@ async function walk(dir: string, onFile: (file: string) => Promise<void>): Promi
     if (entry.isDirectory()) {
       await walk(full, onFile);
     } else if (entry.isFile()) {
-      await onFile(full);
+      const cont = await onFile(full);
+      if (!cont) return;
     }
   }
 }

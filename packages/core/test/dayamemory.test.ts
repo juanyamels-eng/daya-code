@@ -81,6 +81,13 @@ describe('LocalMemory', () => {
     expect(await mem.get('p', 'soon')).toBeNull();
   });
 
+  it('hides expired entries from get/list/delete without explicit purge', async () => {
+    await mem.upsert({ namespace: 'p', key: 'temp', value: 'x', metadata: null, expiresAt: Date.now() - 1000 });
+    expect(await mem.list('p', 10)).toHaveLength(0);
+    expect(await mem.get('p', 'temp')).toBeNull();
+    expect(await mem.delete('p', 'temp')).toBe(false);
+  });
+
   it('delete removes an entry', async () => {
     await mem.upsert({ namespace: 'p', key: 'k', value: 'v', metadata: null, expiresAt: null });
     expect(await mem.delete('p', 'k')).toBe(true);

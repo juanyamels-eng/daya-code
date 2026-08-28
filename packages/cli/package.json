@@ -35,7 +35,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@daya-code/core": "^0.5.0",
+    "@daya-code/core": "*",
     "ink": "^5.0.1",
     "ink-spinner": "^5.0.0",
     "ink-text-input": "^6.0.0",

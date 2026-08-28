@@ -34,12 +34,19 @@ const Demo = () => {
   const columns = stdout.columns ?? 80;
   return (
     <Box flexDirection="column">
-      <Box justifyContent="space-between" width="100%">
-        <Text color={theme.text.muted}>{g.brand} DAYA Code {g.bullet} v0.5.0</Text>
-        <Text color={theme.text.muted}>groq {g.bullet} llama-3.3-70b-versatile {g.bullet} catppuccin</Text>
-      </Box>
-      <Box marginBottom={1}>
-        <Text color={theme.text.muted}>{g.hairline.repeat(Math.max(40, columns - 1))}</Text>
+      <Box width={columns} marginBottom={1}>
+        <Box flexGrow={1}>
+          <Text color={theme.text.primary}>* DAYA Code</Text>
+          <Text color={theme.text.muted}>{' | v0.5.1'}</Text>
+        </Box>
+        <Box flexGrow={1} justifyContent="center">
+          <Text color={theme.accents.build} bold>* build</Text>
+          <Text color={theme.text.muted}>{'  '}</Text>
+          <Text color={theme.text.muted}>o plan</Text>
+        </Box>
+        <Box flexGrow={1} justifyContent="flex-end">
+          <Text color={theme.text.muted}>groq | llama-3.3-70b-versatile | catppuccin</Text>
+        </Box>
       </Box>
 
       <Box flexDirection="column" height={25} flexGrow={1}>
@@ -52,6 +59,25 @@ const Demo = () => {
         <MessageRow
           theme={theme}
           entry={{
+            kind: 'assistant',
+            text: [
+              '## Diagnóstico',
+              'El **token** se creaba sin expiración en `src/login.ts`. Plan:',
+              '- [x] Localizar el bug',
+              '- [x] Añadir `ttl` de 1 hora',
+              '- [ ] Correr tests',
+              '',
+              '```ts',
+              'const token = createToken(u, p, { ttl: 3600 });',
+              '```',
+              '',
+              'Puedes ver el cambio en el diff de abajo *antes* de aplicarlo.',
+            ].join('\n'),
+          }}
+        />
+        <MessageRow
+          theme={theme}
+          entry={{
             kind: 'tool',
             text: `${g.check} bash ${g.bullet} 0.8s`,
             meta: 'cat API routes everywhere...',
@@ -61,18 +87,26 @@ const Demo = () => {
           theme={theme}
           entry={{
             kind: 'tool',
-            text: `${g.check} edit ${g.bullet} 0.3s`,
+            text: `${g.check} edit ${g.bullet} 0.3s ${g.bullet} review`,
             meta: [
-              'diff --git a/src/login.ts b/src/login.ts',
-              '--- a/src/login.ts',
-              '+++ b/src/login.ts',
-              '@@ -12,7 +12,7 @@ export function login(u, p) {',
-              ' const ok = db.check(u, p);',
-              '-const token = createToken(u, p);',
-              '+const token = createToken(u, p, { ttl: 3600 });',
-              ' return { ok, token };',
+              '-linea vieja con contenido',
+              '+linea nueva con contenido',
+              '  contexto',
             ].join('\n'),
           }}
+        />
+        <DiffMeta
+          theme={theme}
+          text={[
+            'diff --git a/src/login.ts b/src/login.ts',
+            '--- a/src/login.ts',
+            '+++ b/src/login.ts',
+            '@@ -12,7 +12,7 @@ export function login(u, p) {',
+            ' const ok = db.check(u, p);',
+            '-const token = createToken(u, p);',
+            '+const token = createToken(u, p, { ttl: 3600 });',
+            ' return { ok, token };',
+          ].join('\n')}
         />
         <MessageRow
           theme={theme}
@@ -90,6 +124,10 @@ const Demo = () => {
           theme={theme}
           entry={{ kind: 'system', text: `compacted ${g.dash} summarized 4, kept 2` }}
         />
+        <MessageRow
+          theme={theme}
+          entry={{ kind: 'system', text: `${g.dots} 23 older lines ${g.dash} ↑ scroll` }}
+        />
         <SpinnerLine />
       </Box>
 
@@ -99,7 +137,7 @@ const Demo = () => {
       </Box>
       <Box justifyContent="space-between" width="100%" marginTop={1}>
         <Text color={theme.accents.build}>
-          running {g.bullet} <Text color={theme.text.muted}>ctrl+c to cancel</Text>
+          running {g.bullet} 9s {g.bullet} <Text color={theme.text.muted}>ctrl+c to cancel</Text>
         </Text>
         <Text color={theme.text.muted}>
           1.2k {g.bullet} 4% ctx {g.bullet} $0.00 {g.bullet} 4 tools

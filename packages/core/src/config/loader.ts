@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
-import { PROVIDER_PRESETS } from '../providers/registry.js';
+import { PROVIDER_PRESETS, PROVIDER_ENV_KEYS } from '../providers/registry.js';
 
 const ProviderNameSchema = z.enum([
   'mock',
@@ -90,8 +90,12 @@ export async function saveConfig(cfg: DayaConfig, path: string = defaultConfigPa
 }
 
 export function envOverrides(cfg: DayaConfig): DayaConfig {
-  const apiKey = process.env.DAYA_API_KEY ?? process.env.ANTHROPIC_API_KEY ?? process.env.OPENAI_API_KEY;
-  const providerName = process.env.DAYA_PROVIDER as DayaConfig['provider']['name'] | undefined;
+  const providerName = (process.env.DAYA_PROVIDER ?? cfg.provider.name) as DayaConfig['provider']['name'];
+  // DAYA_API_KEY doubles as a universal fallback; otherwise the key for the
+  // *configured* provider is used so Groq/OpenRouter/etc. keys are honored.
+  const envKey = PROVIDER_ENV_KEYS[providerName];
+  const apiKey =
+    process.env.DAYA_API_KEY ?? (envKey ? process.env[envKey] : process.env.DAYA_API_KEY);
   const model = process.env.DAYA_MODEL;
   const baseUrl = process.env.DAYA_BASE_URL;
   return {

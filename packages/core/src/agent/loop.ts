@@ -29,6 +29,7 @@ export interface AgentDeps {
   system?: string;
   maxSteps?: number;
   maxTokens?: number;
+  temperature?: number;
   mode?: AgentMode;
   daya?: AgentDayaConfig;
   conventions?: string;
@@ -106,9 +107,10 @@ const DEFAULT_MAX_TOKENS = 4096;
 const CONTEXT_COMPACTION_THRESHOLD = 0.9;
 const MAX_RETRIES = 3;
 const BASE_RETRY_DELAY_MS = 1000;
+const MAX_MENTION_BYTES = 2 * 1024 * 1024;
 
 const PLAN_ONLY_TOOLS = new Set(['read_file', 'glob', 'grep']);
-const MUTATING_TOOLS = new Set(['write_file', 'edit_file', 'bash']);
+const MUTATING_TOOLS = new Set(['write_file', 'edit_file', 'bash', 'daya_generate_image']);
 
 export class Agent {
   private readonly deps: AgentDeps;
@@ -118,6 +120,7 @@ export class Agent {
   private checkpoints = new CheckpointManager();
   private watcher: FileWatcher | null = null;
   private trackedFiles: Set<string> = new Set();
+  private contextMessages: Message[] = [];
 
   constructor(deps: AgentDeps) {
     this.deps = deps;
@@ -180,7 +183,9 @@ export class Agent {
   async saveMemory(key: string, value: string): Promise<boolean> {
     const cwd = this.deps.cwd;
     try {
-      const file = resolve(cwd, 'DAYA.md');
+      // Honor a configured memory file (e.g. a shared project file) and fall
+      // back to the conventional DAYA.md at the project root.
+      const file = this.deps.memoryFile ?? resolve(cwd, 'DAYA.md');
       if (!existsSync(file)) {
         await writeFile(file, `# Project Memory\n\n- ${key}: ${value}\n`, 'utf8');
         return true;
@@ -267,10 +272,11 @@ export class Agent {
   }
 
   getContextInfo(): ContextInfo {
+    const system = this.deps.system ?? DEFAULT_SYSTEM;
     return {
-      estimatedTokens: 0,
+      estimatedTokens: this.estimateTokens(this.contextMessages, system),
       maxTokens: this.deps.maxTokens ?? DEFAULT_MAX_TOKENS,
-      messageCount: 0,
+      messageCount: this.contextMessages.length,
       filesReferenced: [...this.filesReferenced],
       mode: this.currentMode,
     };
@@ -278,6 +284,7 @@ export class Agent {
 
   async run(prompt: string, options: AgentRunOptions = {}): Promise<Message[]> {
     const messages: Message[] = options.history ? [...options.history] : [];
+    this.contextMessages = messages;
 
     if (options.mode) {
       this.currentMode = options.mode;
@@ -327,6 +334,7 @@ export class Agent {
             messages,
             tools: this.toolDefinitions(),
             maxTokens,
+            temperature: this.deps.temperature,
             signal,
           });
 
@@ -360,6 +368,7 @@ export class Agent {
         }
       }
 
+      if (signal.aborted) throw new Error('aborted');
       if (streamError) {
         consecutiveErrors += 1;
         if (consecutiveErrors >= 3) {
@@ -380,6 +389,7 @@ export class Agent {
         timestamp: Date.now(),
       };
       messages.push(assistantMsg);
+      this.contextMessages = messages;
 
       if (toolCalls.length === 0) {
         options.onEvent?.({ type: 'done', data: { reason: 'end_turn' as StopReason, messages } });
@@ -399,6 +409,7 @@ export class Agent {
           });
         },
       });
+      this.contextMessages = messages;
 
       // Self-correction: if tools reported errors and we still have budget,
       // feed the failures back to the model and let it fix its approach.
@@ -422,9 +433,14 @@ export class Agent {
         continue;
       }
 
-      // Run lint after mutating tools if configured
-      if (this.deps.lintCmd) {
-        await this.runPostMutationHook(this.deps.lintCmd, 'lint', signal, options.onEvent);
+      // Run lint + tests after a step that actually mutated the repo
+      if (toolCalls.some((tc) => MUTATING_TOOLS.has(tc.name))) {
+        if (this.deps.lintCmd) {
+          await this.runPostMutationHook(this.deps.lintCmd, 'lint', signal, options.onEvent);
+        }
+        if (this.deps.testCmd) {
+          await this.runPostMutationHook(this.deps.testCmd, 'test', signal, options.onEvent);
+        }
       }
     }
 
@@ -446,7 +462,7 @@ export class Agent {
       const filePath = isAbsolute(raw) ? raw : resolve(this.deps.cwd, raw);
       try {
         const s = await stat(filePath);
-        if (s.isFile()) {
+        if (s.isFile() && s.size <= MAX_MENTION_BYTES) {
           const content = await readFile(filePath, 'utf8');
           fileContents.push({ path: filePath, content });
           this.filesReferenced.add(filePath);
@@ -537,7 +553,11 @@ export class Agent {
       const { execFile } = await import('node:child_process');
       const { promisify } = await import('node:util');
       const execFileAsync = promisify(execFile);
-      const result = await execFileAsync('bash', ['-c', cmd], {
+      // Use cmd.exe on Windows so hooks work on machines without bash.
+      const isWin = process.platform === 'win32';
+      const shell = isWin ? 'cmd' : 'bash';
+      const args = isWin ? ['/d', '/s', '/c', cmd] : ['-c', cmd];
+      const result = await execFileAsync(shell, args, {
         cwd: this.deps.cwd,
         timeout: 30000,
         signal,
@@ -551,27 +571,56 @@ export class Agent {
   }
 
   // --- Auto-commit ---
-  async autoCommit(message: string, cwd: string, signal: AbortSignal): Promise<boolean> {
-    if (!this.deps.autoCommit) return false;
+  async autoCommit(
+    message: string,
+    cwd: string,
+    signal: AbortSignal,
+    opts: { force?: boolean; paths?: string[] } = {},
+  ): Promise<boolean> {
+    // Without `force`, commits only happen when auto-commit is enabled. The
+    // forced mode is used by the TUI's explicit `/commit`, which stages
+    // nothing new (only already-staged changes are committed), so unrelated
+    // user work is never swept in.
+    if (!opts.force && !this.deps.autoCommit) return false;
     try {
       const { execFile } = await import('node:child_process');
       const { promisify } = await import('node:util');
       const execFileAsync = promisify(execFile);
-      await execFileAsync('git', ['add', '-A'], { cwd, signal });
-      await execFileAsync('git', ['commit', '-m', message, '--allow-empty'], { cwd, signal });
+      const commit = () =>
+        execFileAsync('git', ['commit', '-m', message, '--allow-empty'], { cwd, signal });
+      if (opts.force) {
+        await commit();
+      } else if (opts.paths && opts.paths.length > 0) {
+        await execFileAsync('git', ['add', '--', ...opts.paths], { cwd, signal });
+        await commit();
+      } else {
+        await execFileAsync('git', ['add', '-A'], { cwd, signal });
+        await commit();
+      }
       return true;
     } catch {
       return false;
     }
   }
 
+  /**
+   * Undo the DAYA agent's last commit without destroying user work.
+   * Only touches the most recent commit when its subject starts with `daya:`
+   * (DAYA's own auto-commits) and uses `git reset --soft HEAD~1`, so the
+   * changes stay in the index/working tree instead of being wiped.
+   */
   async revertLastCommit(cwd: string, signal: AbortSignal): Promise<string> {
     const { execFile } = await import('node:child_process');
     const { promisify } = await import('node:util');
     const execFileAsync = promisify(execFile);
-    const result = await execFileAsync('git', ['log', '-1', '--format=%H %s'], { cwd, signal });
-    const [hash] = result.stdout.trim().split(' ');
-    await execFileAsync('git', ['reset', '--hard', 'HEAD~1'], { cwd, signal });
+    const result = await execFileAsync('git', ['log', '-1', '--format=%H%n%s'], { cwd, signal });
+    const [hash, subject] = result.stdout.trim().split('\n');
+    if (!subject || !subject.startsWith('daya:')) {
+      throw new Error(
+        `refusing to undo last commit "${subject ?? '(none)'}" — only DAYA commits (subject prefix "daya:") are reverted, so your own work is never wiped`,
+      );
+    }
+    await execFileAsync('git', ['reset', '--soft', 'HEAD~1'], { cwd, signal });
     return hash ?? 'unknown';
   }
 
@@ -585,38 +634,17 @@ export class Agent {
     const estimated = this.estimateTokens(messages, system);
     const threshold = Math.floor(maxTokens * CONTEXT_COMPACTION_THRESHOLD);
     if (estimated < threshold) return;
-    if (messages.length <= 6) return;
-
-    const keepRecent = 4;
-    const toCompact = messages.slice(0, messages.length - keepRecent);
-    const kept = messages.slice(messages.length - keepRecent);
-
-    const summary = toCompact
-      .filter((m) => m.role === 'assistant' || m.role === 'user')
-      .map((m) => {
-        const prefix = m.role === 'user' ? 'User' : 'Assistant';
-        const content = m.content.length > 200 ? m.content.slice(0, 200) + '...' : m.content;
-        return `${prefix}: ${content}`;
-      })
-      .join('\n');
-
-    const compactMsg: Message = {
-      id: nanoid(),
-      role: 'system',
-      content: `[Context compacted — earlier conversation summarized]\n${summary}`,
-      timestamp: Date.now(),
-    };
-
-    messages.length = 0;
-    messages.push(compactMsg, ...kept);
-
-    onEvent?.({ type: 'compacted', data: { removed: toCompact.length, kept: kept.length } });
+    this.doCompact(messages, onEvent);
   }
 
   compactManual(
     messages: Message[],
     onEvent?: (e: AgentEvent) => void,
   ): void {
+    this.doCompact(messages, onEvent);
+  }
+
+  private doCompact(messages: Message[], onEvent?: (e: AgentEvent) => void): void {
     if (messages.length <= 6) return;
 
     const keepRecent = 4;
@@ -750,10 +778,12 @@ export class Agent {
         }
       }
 
-      // Auto-commit after file mutations
+      // Auto-commit after file mutations — stage only the touched file(s)
+      // instead of sweeping in unrelated user changes with `git add -A`.
       if (this.deps.autoCommit && (call.name === 'write_file' || call.name === 'edit_file')) {
         const path = (call.input as Record<string, string>)?.path ?? 'unknown file';
-        await this.autoCommit(`daya: update ${path}`, this.deps.cwd, ctx.signal);
+        const full = isAbsolute(path) ? path : resolve(this.deps.cwd, path);
+        await this.autoCommit(`daya: update ${path}`, this.deps.cwd, ctx.signal, { paths: [full] });
       }
     }
 

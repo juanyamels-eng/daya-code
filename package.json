@@ -4,6 +4,9 @@
   "private": true,
   "description": "Monorepo for DAYA Code — terminal code agent connected to the DAYA suite",
   "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/juanyamels-eng/daya-code"
@@ -22,11 +25,15 @@
     "test:mcp": "npm --prefix packages/mcp-server test",
     "test:gateway": "npm --prefix packages/gateway test",
     "lint": "npm --prefix packages/core run lint && npm --prefix packages/cli run lint && npm --prefix packages/mcp-server run lint && npm --prefix packages/gateway run lint",
+    "lint:eslint": "eslint packages --report-unused-disable-directives",
     "start": "npm --prefix packages/cli start",
     "dev": "npm --prefix packages/cli run dev"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "prettier": "^3.2.0"
+    "prettier": "^3.2.0",
+    "eslint": "^9.0.0",
+    "@eslint/js": "^9.0.0",
+    "typescript-eslint": "^8.0.0"
   }
 }

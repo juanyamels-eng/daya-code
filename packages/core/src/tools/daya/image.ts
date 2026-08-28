@@ -16,7 +16,7 @@ export const GenerateImageInputSchema = z.object({
   savePath: z
     .string()
     .optional()
-    .describe('Where to save the image(s). Relative to cwd or absolute. Default: ./.daya/images/<timestamp>-<n>.<ext>'),
+    .describe('Where to save the image(s): a file path or a directory. Relative to cwd or absolute. When omitted, nothing is written to disk — URLs are returned only.'),
 });
 
 export const GenerateImageTool: Tool = {
@@ -63,6 +63,14 @@ export async function generateImage(input: unknown, ctx: ToolContext): Promise<T
       const item = res.data[i]!;
       const ext = pickExt(item);
       const target = extname(baseAbs) ? baseAbs : join(baseAbs, `${Date.now()}-${i}.${ext}`);
+
+      // Same approval path as write_file: saving to disk is a mutating action
+      // and must not happen silently without a permission check.
+      const decision = await ctx.permissions.check({ kind: 'write_file', path: target });
+      if (!decision.allowed) {
+        return err(`Permission denied for saving image to ${target}: ${decision.reason ?? 'no reason given'}`);
+      }
+
       try {
         await mkdir(dirname(target), { recursive: true });
         if (item.b64_json) {

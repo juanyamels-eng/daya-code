@@ -46,7 +46,6 @@ export class DayaClient {
     };
     const init: RequestInit = { method, headers };
     if (body !== undefined) init.body = JSON.stringify(body);
-    if (opts.signal) init.signal = opts.signal;
 
     const timeout = opts.timeoutMs ?? 30_000;
     const controller = new AbortController();
@@ -72,8 +71,15 @@ export class DayaClient {
     }
   }
 
-  fetchRaw(url: string, opts: { signal?: AbortSignal } = {}): Promise<Response> {
-    return this.fetchImpl(url, { signal: opts.signal });
+  fetchRaw(url: string, opts: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<Response> {
+    const timeout = opts.timeoutMs ?? 60_000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`DAYA download timeout after ${timeout}ms`)), timeout);
+    if (opts.signal) {
+      if (opts.signal.aborted) controller.abort(opts.signal.reason);
+      else opts.signal.addEventListener('abort', () => controller.abort(opts.signal?.reason), { once: true });
+    }
+    return this.fetchImpl(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
   }
 
   generateImage(body: GenerateImageRequest, opts?: DayaRequestOptions): Promise<GenerateImageResponse> {

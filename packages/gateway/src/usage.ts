@@ -1,4 +1,5 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 export interface UsageRecord {
@@ -15,6 +16,7 @@ export interface UsageRecord {
 export class UsageStore {
   private sums = new Map<string, { prompt: number; completion: number; cost: number; requests: number }>();
   private loaded = false;
+  private writeChain: Promise<void> = Promise.resolve();
 
   constructor(private readonly file: string) {}
 
@@ -63,12 +65,26 @@ export class UsageStore {
 
   record(rec: UsageRecord): void {
     mkdirSync(dirname(this.file), { recursive: true });
-    appendFileSync(this.file, JSON.stringify(rec) + '\n', 'utf8');
+    // Persist asynchronously but strictly serialized; the in-memory sums stay
+    // authoritative for quota decisions within this process. A disk failure
+    // must not break request handling.
+    this.writeChain = this.writeChain
+      .then(() => appendFile(this.file, JSON.stringify(rec) + '\n', 'utf8'))
+      .catch((e) => {
+        process.stderr.write(
+          `[gateway] usage persistence failed: ${e instanceof Error ? e.message : String(e)}\n`,
+        );
+      });
     const s = this.sums.get(rec.token) ?? { prompt: 0, completion: 0, cost: 0, requests: 0 };
     s.prompt += rec.promptTokens;
     s.completion += rec.completionTokens;
     s.cost += rec.costUsd;
     s.requests += 1;
     this.sums.set(rec.token, s);
+  }
+
+  /** Await any pending persistence writes (e.g. during graceful shutdown). */
+  async flush(): Promise<void> {
+    await this.writeChain;
   }
 }

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, chmodSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -14,6 +14,7 @@ export interface GatewayUser {
   token: string;
   enabled: boolean;
   quota?: number;
+  rpm?: number;
 }
 
 export interface Topup {
@@ -87,7 +88,7 @@ export function loadConfig(): GatewayConfig {
   const raw: RawConfig = {};
   for (const file of configCandidates()) {
     if (existsSync(file)) {
-      Object.assign(raw, JSON.parse(readFileSync(file, 'utf8')));
+      Object.assign(raw, readConfigFile(file));
       break;
     }
   }
@@ -108,10 +109,17 @@ export function loadConfig(): GatewayConfig {
     token: String(u.token ?? ''),
     enabled: u.enabled ?? true,
     quota: u.quota,
+    rpm: u.rpm,
   }));
 
+  const rawPort = raw.port ?? Number(process.env['GATEWAY_PORT'] ?? 8787);
+  const port = Number.isInteger(rawPort) && rawPort > 0 && rawPort <= 65535 ? rawPort : 8787;
+  if (port !== rawPort) {
+    console.warn(`[gateway] invalid port ${rawPort}; falling back to 8787`);
+  }
+
   return {
-    port: raw.port ?? Number(process.env['GATEWAY_PORT'] ?? 8787),
+    port,
     adminKey: raw.adminKey ?? process.env['GATEWAY_ADMIN_KEY'],
     upstreams,
     users,
@@ -130,13 +138,26 @@ export function configFilePath(existing: GatewayConfig): string {
 /** Read the config file (or the accumulated env/upstream view) as a mutable JSON object. */
 export function readConfigFile(path: string): RawConfig {
   if (existsSync(path)) {
-    return JSON.parse(readFileSync(path, 'utf8')) as RawConfig;
+    try {
+      return JSON.parse(readFileSync(path, 'utf8')) as RawConfig;
+    } catch (e) {
+      throw new Error(
+        `gateway config ${path} is not valid JSON: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
   return {};
 }
 
 export function writeConfigFile(path: string, raw: RawConfig): void {
-  writeFileSync(path, JSON.stringify(raw, null, 2) + '\n', 'utf8');
+  // Write to a temp file in the same directory and atomically rename so a
+  // crash mid-write can never leave a truncated/corrupt config behind.
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
+  const tmp = join(dir, `.daya-gateway-${process.pid}.tmp`);
+  writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', 'utf8');
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, path);
 }
 
 export function upsertUser(raw: RawConfig, user: Partial<GatewayUser> & { name: string }): GatewayUser {
@@ -147,6 +168,7 @@ export function upsertUser(raw: RawConfig, user: Partial<GatewayUser> & { name: 
     token: existing?.token ?? user.token ?? randomToken(),
     enabled: user.enabled ?? existing?.enabled ?? true,
     quota: user.quota !== undefined ? user.quota : existing?.quota,
+    rpm: user.rpm !== undefined ? user.rpm : existing?.rpm,
   };
   if (existing) {
     Object.assign(existing, next);

@@ -104,6 +104,13 @@ export function estimatePromptTokens(body: Record<string, unknown>): number {
   }
   const sys = body['system'];
   if (typeof sys === 'string') chars += sys.length;
+  else if (Array.isArray(sys)) {
+    // OpenAI-style system prompt as a content-array of text parts.
+    for (const part of sys) {
+      const text = part && part['text'];
+      if (typeof text === 'string') chars += text.length;
+    }
+  }
   return estimateTokens(chars);
 }
 
@@ -120,6 +127,7 @@ async function callUpstream(
   candidate: Candidate,
   body: Record<string, unknown>,
   isAdmin: boolean,
+  abort?: AbortSignal,
 ): Promise<UpstreamResult> {
   const upstreamBody: Record<string, unknown> = { ...body, model: candidate.model };
   if (isAdmin || (body as { stream?: boolean }).stream === true) {
@@ -128,6 +136,9 @@ async function callUpstream(
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120_000);
+  if (abort) {
+    abort.addEventListener('abort', () => controller.abort(), { once: true });
+  }
   const headers: Record<string, string> = {
     'content-type': 'application/json',
     authorization: `Bearer ${candidate.apiKey}`,
@@ -191,22 +202,25 @@ export async function forwardChat(
   model: string,
   body: Record<string, unknown>,
   isAdmin: boolean,
+  abort?: AbortSignal,
   onUpstreamError?: (candidate: Candidate, status: number) => void,
 ): Promise<{ outcome: ChatOutcome; result: UpstreamResult }> {
   const candidates = resolveCandidates(cfg, model);
-  let lastError = undefined as { status: number } | undefined;
+  let lastError: { status: number; detail: string } | undefined;
   for (let i = 0; i < candidates.length; i++) {
+    if (abort?.aborted) throw new Error('client disconnected');
     const candidate = candidates[i]!;
-    const result = await callUpstream(cfg, candidate, body, isAdmin);
+    const result = await callUpstream(cfg, candidate, body, isAdmin, abort);
     if (result.ok) {
       return { outcome: { candidates, chosen: candidate }, result };
     }
+    const detail = await readErrorText(result.body);
     if (onUpstreamError) onUpstreamError(candidate, result.status);
-    lastError = { status: result.status };
-    await result.body[Symbol.asyncIterator]().next();
+    lastError = { status: result.status, detail };
   }
-  const finalStatus = lastError?.status && lastError.status >= 400 ? lastError.status : 502;
-  const errText = finalStatus >= 500 ? 'Upstream request failed' : 'Upstream refused the request';
+  const finalStatus = lastError && lastError.status >= 400 ? lastError.status : 502;
+  const base = finalStatus >= 500 ? 'Upstream request failed' : 'Upstream refused the request';
+  const errText = lastError?.detail ? `${base}: ${lastError.detail.slice(0, 300)}` : base;
   const result: UpstreamResult = {
     ok: false,
     status: finalStatus,
@@ -216,6 +230,24 @@ export async function forwardChat(
   };
   const last = candidates[candidates.length - 1]!;
   return { outcome: { candidates, chosen: last }, result };
+}
+
+/** Drain a failed upstream response body (bounded) and close it cleanly. */
+async function readErrorText(body: AsyncIterable<Uint8Array>): Promise<string> {
+  let text = '';
+  try {
+    const it = body[Symbol.asyncIterator]();
+    for (let i = 0; i < 16 && text.length < 4096; i++) {
+      const { done, value } = await it.next();
+      if (done || !value) break;
+      text += Buffer.from(value).toString('utf8');
+    }
+    const closeFn = (it as { return?: () => Promise<unknown> }).return;
+    if (typeof closeFn === 'function') await closeFn.call(it);
+  } catch {
+    /* ignore */
+  }
+  return text.trim();
 }
 
 export function jsonBody(obj: unknown): AsyncIterable<Uint8Array> {
