@@ -15,6 +15,7 @@ import {
   handleAdminUpsert,
   handleAdminDelete,
   handleAdminDashboard,
+  handleAdminRotateToken,
 } from './admin.js';
 import {
   handlePortal,
@@ -270,6 +271,11 @@ export function createGateway(cfg: GatewayConfig, usage?: UsageStore): Server {
         const identity = authenticate(cfg, bearerToken(req));
         const name = decodeURIComponent(url.slice('/admin/api/users/'.length));
         return handleAdminDelete(cfg, identity, name, res);
+      }
+      if (url.startsWith('/admin/api/users/') && req.method === 'POST' && url.endsWith('/rotate-token')) {
+        const identity = authenticate(cfg, bearerToken(req));
+        const name = decodeURIComponent(url.slice('/admin/api/users/'.length, url.lastIndexOf('/rotate-token')));
+        return handleAdminRotateToken(cfg, identity, name, res);
       }
 
       // ---- User portal ----

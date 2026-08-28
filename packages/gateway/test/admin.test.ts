@@ -118,6 +118,26 @@ describe('gateway admin panel', () => {
       delete process.env['GATEWAY_CONFIG'];
     }
   });
+
+  it('rotates a user token as admin', async () => {
+    const file = join(dir, 'daya.gateway.json');
+    process.env['GATEWAY_CONFIG'] = file;
+    try {
+      await adminWrite('/admin/api/users', 'POST', 'adminkey', { name: 'luna', token: 'tk-luna' });
+      const r = await adminWrite('/admin/api/users/luna/rotate-token', 'POST', 'adminkey', {});
+      expect(r.status).toBe(200);
+      const d = JSON.parse(r.text) as { rotated: boolean; user: { name: string; token: string } };
+      expect(d.rotated).toBe(true);
+      expect(d.user.name).toBe('luna');
+      expect(d.user.token.startsWith('daya_')).toBe(true);
+      expect(d.user.token).not.toBe('tk-luna');
+
+      const missing = await adminWrite('/admin/api/users/nobody/rotate-token', 'POST', 'adminkey', {});
+      expect(missing.status).toBe(404);
+    } finally {
+      delete process.env['GATEWAY_CONFIG'];
+    }
+  });
 });
 
 describe('gateway config + cache helpers', () => {

@@ -68,6 +68,7 @@ export function handlePortal(host: string | undefined, res: ServerResponse): voi
     <p class="muted">Paste your API key (the <code>daya_...</code> token your admin gave you) to see your usage and setup.</p>
     <input id="key" type="password" placeholder="daya_..." autocomplete="off" />
     <button id="go">View my account</button>
+    <p class="muted" style="font-size:12px;margin-top:10px">Lost your key? Ask your admin to rotate it in the admin panel (they can view/regenerate it there).</p>
   </div>
 
   <div id="dash" style="display:none">

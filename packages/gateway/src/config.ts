@@ -163,6 +163,14 @@ export function removeUser(raw: RawConfig, name: string): boolean {
   return raw.users.length !== before;
 }
 
+/** Generate a fresh token for a user (recovery / rotation). */
+export function rotateUserToken(raw: RawConfig, name: string): GatewayUser | undefined {
+  const user = (raw.users ?? []).find((u) => u.name === name);
+  if (!user) return undefined;
+  user.token = randomToken();
+  return user as GatewayUser;
+}
+
 export function randomToken(bytes = 24): string {
   return 'daya_' + randomBytes(bytes).toString('hex');
 }

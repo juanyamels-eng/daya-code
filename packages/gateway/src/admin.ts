@@ -6,6 +6,7 @@ import {
   writeConfigFile,
   upsertUser,
   removeUser,
+  rotateUserToken,
 } from './config.js';
 import type { Identity } from './server.js';
 
@@ -78,6 +79,26 @@ export function handleAdminDelete(cfg: GatewayConfig, identity: Identity | undef
   res.statusCode = removed ? 200 : 404;
   res.setHeader('content-type', 'application/json');
   res.end(JSON.stringify({ removed, name }));
+}
+
+export function handleAdminRotateToken(cfg: GatewayConfig, identity: Identity | undefined, name: string, res: ServerResponse): void {
+  if (!isAdmin(identity)) {
+    res.statusCode = 401;
+    res.end('admin key required');
+    return;
+  }
+  const file = configFilePath(cfg);
+  const raw = readConfigFile(file);
+  const user = rotateUserToken(raw, name);
+  if (!user) {
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: `user ${name} not found` }));
+    return;
+  }
+  writeConfigFile(file, raw);
+  cfg.users = raw.users as GatewayUser[];
+  res.setHeader('content-type', 'application/json');
+  res.end(JSON.stringify({ user, rotated: true }));
 }
 
 export function handleAdminDashboard(identity: Identity | undefined, res: ServerResponse): void {
@@ -155,10 +176,18 @@ const dashboardHtml = `<!doctype html>
         <td>\${u.quota ?? 'âˆž'}</td>
         <td>\${(u.monthTokens || 0).toLocaleString()} tok</td>
         <td><button class="ghost" data-toggle="\${u.name}">\${u.enabled ? 'off' : 'on'}</button>
+            <button class="ghost" data-rotate="\${u.name}">rotate</button>
             <button class="ghost" data-del="\${u.name}">delete</button></td>
       </tr>\`).join('') || '<tr><td colspan="6" class="muted">No users yet.</td></tr>';
       for (const b of document.querySelectorAll('[data-toggle]')) b.onclick = () => toggle(b.dataset.toggle);
       for (const b of document.querySelectorAll('[data-del]')) b.onclick = () => del(b.dataset.del);
+      for (const b of document.querySelectorAll('[data-rotate]')) b.onclick = () => rotate(b.dataset.rotate);
+    }
+    async function rotate(name) {
+      if (!confirm('Generate a NEW API key for ' + name + '? The old one stops working.')) return;
+      const d = await json('POST', '/admin/api/users/' + encodeURIComponent(name) + '/rotate-token');
+      alert('New key for ' + name + ':\n' + d.user.token);
+      load();
     }
     async function toggle(name) {
       const d = await (await fetch('/admin/api/users')).json();
