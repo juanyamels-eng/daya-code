@@ -21,6 +21,7 @@ import {
   handlePortal,
   handlePortalMe,
   buildPortalStats,
+  userTopups,
 } from './portal.js';
 import {
   handleCreateTopup,
@@ -288,7 +289,7 @@ export function createGateway(cfg: GatewayConfig, usage?: UsageStore): Server {
           const s = store.userStats(token);
           const user = cfg.users.find((u) => u.token === token);
           const id: Identity = { token, name: user?.name ?? 'user', admin: false, quota: user?.quota };
-          return buildPortalStats(id, s.monthTokens, s.monthCostUsd, s.requests);
+          return buildPortalStats(id, s.monthTokens, s.monthCostUsd, s.requests, userTopups(cfg, id.name));
         }, res);
       }
       if (url === '/portal/api/topup' && req.method === 'POST') {

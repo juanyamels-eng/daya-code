@@ -1,7 +1,8 @@
 import type { ServerResponse } from 'node:http';
-import type { GatewayConfig } from './config.js';
+import type { GatewayConfig, Topup } from './config.js';
 import type { Identity } from './server.js';
 import { MODEL_CATALOG } from './catalog.js';
+import { configFilePath, readConfigFile } from './config.js';
 
 export interface PortalStats {
   name: string;
@@ -13,9 +14,10 @@ export interface PortalStats {
   remaining: number | null;
   percentUsed: number | null;
   freeModels: string[];
+  topups: Topup[];
 }
 
-export function buildPortalStats(identity: Identity, monthTokens: number, monthCostUsd: number, requests: number): PortalStats {
+export function buildPortalStats(identity: Identity, monthTokens: number, monthCostUsd: number, requests: number, topups: Topup[]): PortalStats {
   const quota = identity.quota ?? null;
   const plan = quota === undefined || quota === null ? 'unlimited' : quota <= 0 ? 'free' : 'paid';
   const remaining = quota === null ? null : Math.max(0, quota - monthTokens);
@@ -31,7 +33,14 @@ export function buildPortalStats(identity: Identity, monthTokens: number, monthC
     remaining,
     percentUsed,
     freeModels,
+    topups,
   };
+}
+
+export function userTopups(cfg: GatewayConfig, name: string): Topup[] {
+  const file = configFilePath(cfg);
+  const raw = readConfigFile(file);
+  return (raw.topups ?? []).filter((t) => t.user === name);
 }
 
 export function handlePortalMe(
@@ -102,6 +111,11 @@ export function handlePortal(host: string | undefined, res: ServerResponse): voi
     </div>
 
     <div class="card">
+      <div class="muted">Your top-ups (recargas)</div>
+      <div id="s-topups" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card">
       <div class="muted">Connect DAYA Code</div>
       <pre>set OPENAI_BASE_URL=${base}/v1&#10;set OPENAI_API_KEY=&#60;your daya_... key&#62;&#10;set DAYA_MODEL=free&#10;daya</pre>
     </div>
@@ -132,6 +146,7 @@ export function handlePortal(host: string | undefined, res: ServerResponse): voi
         $('s-bar').style.width=(d.percentUsed||0)+'%';
       }
       $('s-models').innerHTML=(d.freeModels||[]).map(m=>'<span class="tag">'+m+'</span>').join('')||'<span class="muted">none</span>';
+      $('s-topups').innerHTML=(d.topups||[]).length ? '<table style="width:100%;border-collapse:collapse;font-size:13px"><tr><th style="text-align:left;color:#9aa4b5">Code</th><th style="text-align:left;color:#9aa4b5">USD</th><th style="text-align:left;color:#9aa4b5">Tokens</th><th style="text-align:left;color:#9aa4b5">Status</th><th style="text-align:left;color:#9aa4b5">Date</th></tr>'+(d.topups||[]).map(t=>'<tr><td style="padding:6px 4px">'+t.code+'</td><td>$'+t.amountUsd.toFixed(2)+'</td><td>'+t.amountTokens.toLocaleString()+'</td><td>'+t.status+'</td><td class="muted">'+new Date(t.ts).toLocaleDateString()+'</td></tr>').join('')+'</table>' : '<span class="muted">No top-ups yet.</span>';
     }
     $('t-go').onclick=async()=>{
       const usd=Number(document.getElementById('t-usd').value);
