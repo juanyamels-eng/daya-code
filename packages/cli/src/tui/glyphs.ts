@@ -28,7 +28,7 @@ export interface GlyphSet {
   safe: boolean;
 }
 
-const PRETTY: GlyphSet = {
+export const PRETTY: GlyphSet = {
   brand: '\u273b',
   prompt: '\u276f',
   hairline: '\u2500',
@@ -58,7 +58,7 @@ const PRETTY: GlyphSet = {
   safe: true,
 };
 
-const SAFE: GlyphSet = {
+export const SAFE: GlyphSet = {
   brand: '*',
   prompt: '>',
   hairline: '-',

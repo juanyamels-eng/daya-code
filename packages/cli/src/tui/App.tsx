@@ -898,7 +898,11 @@ setLogs((prev) => [...prev, { kind: 'system', text: `mode ${g.arrow} ${next}` }]
     : `${mode === 'plan' ? g.planDot : g.buildDot} ${mode}`;
   const statExtra = busy ? 'ctrl+c to cancel' : `tab plan/build ${g.bullet} /help`;
   const ctxBar =
-    maxTokens > 0 ? `${g.blockFull.repeat(ctxFillN)}${g.blockEmpty.repeat(10 - ctxFillN)} ${contextPct}%  ${g.bullet}  ` : '';
+    maxTokens > 0
+      ? columns >= 60
+        ? `${g.blockFull.repeat(ctxFillN)}${g.blockEmpty.repeat(10 - ctxFillN)} ${contextPct}%  ${g.bullet}  `
+        : `${contextPct}%  ${g.bullet}  `
+      : '';
   const statRight = `${stats.toolsRun} tool${stats.toolsRun === 1 ? '' : 's'}  ${g.bullet}  ${(usedTokens / 1000).toFixed(1)}k  ${g.bullet}  ${formatCost(estimateCost(props.model, stats.inputTokens, stats.outputTokens))}`;
   const statusPad = Math.max(2, columns - statLeft.length - statExtra.length - ctxBar.length - statRight.length - 8);
 
@@ -1205,7 +1209,7 @@ function Welcome({
   columns: number;
   rows: number;
 }): React.ReactElement | null {
-  if (rows < 26) return null;
+  if (rows < 16) return null;
   const brand = DAYA_BRAND;
   // Block-letter "DAYA" (16 cols). Falls back to plain text on non-unicode terms.
   const logo = g.safe
@@ -1224,6 +1228,7 @@ function Welcome({
     ['@file', 'attach a file'],
     ['/mem', 'remember a fact'],
   ];
+  const compact = columns < 60 || rows < 26;
   return (
     <Box flexDirection="column">
       {logo[0] === undefined ? (
@@ -1244,7 +1249,7 @@ function Welcome({
       <Box justifyContent="center" marginTop={1}>
         <Text color={theme.text.secondary}>images {g.bullet} web {g.bullet} docs {g.bullet} memory {g.dash} one terminal</Text>
       </Box>
-      {columns >= 60 && (
+      {!compact && (
         <Box justifyContent="center" marginTop={2}>
           <Box flexDirection="column">
             {Array.from({ length: 3 }, (_, r) => (
@@ -1261,6 +1266,13 @@ function Welcome({
               </Box>
             ))}
           </Box>
+        </Box>
+      )}
+      {compact && (
+        <Box justifyContent="center" marginTop={1}>
+          <Text color={theme.text.muted}>
+            {`tab ${g.swap} build  ·  ↑/↓ scroll  ·  /model switch  ·  /theme palette`}
+          </Text>
         </Box>
       )}
     </Box>
@@ -1335,18 +1347,23 @@ function diffLineStyle(trimmed: string, theme: DayaTheme, forced?: string): { co
 }
 
 function ChangeDiff({ change, theme, columns }: { change: EditReviewChange; theme: DayaTheme; columns: number }): React.ReactElement {
+  const g = glyphs();
   const oldLines = (change.old_text ?? '').split('\n');
   const newLines = change.new_text.split('\n');
   const max = Math.max(oldLines.length, newLines.length);
   // Sequential fallback for very large hunks so the columns stay usable.
   if (max > 60) return <DiffMeta text={formatChangeDiff(change)} theme={theme} />;
   const half = Math.max(16, Math.floor((columns - 4) / 2));
+  const numWidth = Math.max(3, String(max).length);
+  const pad = (n: number) => String(n).padStart(numWidth, ' ');
   return (
     <Box flexDirection="column">
       <Box width={columns - 2}>
+        <Box width={numWidth + 1} />
         <Box width={half}>
           <Text color={theme.text.muted}>- before</Text>
         </Box>
+        <Box width={numWidth + 1} />
         <Box width={half}>
           <Text color={theme.text.muted}>+ after</Text>
         </Box>
@@ -1354,13 +1371,20 @@ function ChangeDiff({ change, theme, columns }: { change: EditReviewChange; them
       {Array.from({ length: max }, (_, i) => {
         const o = oldLines[i] ?? '';
         const n = newLines[i] ?? '';
+        const ln = i + 1;
         return (
-          <Box key={i}>
-            <Box width={half}>
-              <Text color={theme.accents.error} wrap="wrap">{o ? `- ${o}` : ' '}</Text>
+          <Box key={i} flexDirection="row">
+            <Box width={numWidth + 1}>
+              <Text color={theme.text.muted}>{pad(ln)}</Text>
             </Box>
             <Box width={half}>
-              <Text color={theme.accents.success} wrap="wrap">{n ? `+ ${n}` : ' '}</Text>
+              <Text color={theme.accents.error} wrap="truncate">{o ? `- ${o}` : ' '}</Text>
+            </Box>
+            <Box width={numWidth + 1}>
+              <Text color={theme.text.muted}>{pad(ln)}</Text>
+            </Box>
+            <Box width={half}>
+              <Text color={theme.accents.success} wrap="truncate">{n ? `+ ${n}` : ' '}</Text>
             </Box>
           </Box>
         );

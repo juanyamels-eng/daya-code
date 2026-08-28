@@ -47,6 +47,41 @@ export const DAYA_BRAND = '#8a6cff';
 export const DAYA_BRAND_SOFT = '#241d3d';
 
 export const themes: Record<string, DayaTheme> = {
+  'daya-light': {
+    name: 'Daya Light',
+    window: {
+      border: '#c8c4f0',
+      panel: '#faf9ff',
+      headerBg: '#f0edfb',
+      dim: '#9a96b8',
+    },
+    text: {
+      primary: '#1a1733',
+      secondary: '#4a4566',
+      muted: '#9a96b8',
+    },
+    roles: {
+      user: '#3b5bdb',
+      assistant: '#7c5cbf',
+      tool: '#b87a00',
+      system: '#9a96b8',
+      diff: '#1a7f37',
+    },
+    accents: {
+      build: '#1a7f37',
+      plan: '#3b5bdb',
+      brand: DAYA_BRAND,
+      success: '#1a7f37',
+      warning: '#b87a00',
+      error: '#c92a2a',
+      info: '#0b8aa5',
+    },
+    diffBg: {
+      add: '#e8f5ea',
+      rem: '#fdeaea',
+      ctx: '#f0edfb',
+    },
+  },
   daya: {
     name: 'Daya',
     window: {
